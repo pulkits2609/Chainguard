@@ -29,5 +29,6 @@ test-output/
 Thumbs.db
 Desktop.ini
 backups/
+.local/
 certs/
 *.dump

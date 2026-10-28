@@ -23,6 +23,7 @@ from multi_snapshots import SnapshotService
 from settings import environment_bool, load_environment, public_origin
 from snapshots import MAX_SNAPSHOT_BYTES
 from store import Store, StoreForbidden, StoreNotFound
+from ledger_templates import templates
 
 
 class HttpError(Exception):
@@ -201,11 +202,25 @@ class WebHandler(BaseHTTPRequestHandler):
         result["is_owner"] = bool(user and user["id"] == owner)
         return result
 
+    def ledger_access(self, ledger_id, operation="read"):
+        metadata = self.server.store.get_ledger(ledger_id)
+        user = self.current_user()
+        if self.headers.get("Authorization"):
+            raise StoreForbidden("This credential does not permit the requested operation")
+        if metadata["visibility"] == "private" and not (user and (
+                user['id'] == metadata['owner_id'] or user['is_admin'])):
+            raise StoreNotFound("Ledger not found")
+        if metadata['visibility'] == 'private' and self.command != 'GET':
+            self.current_user(required=True, csrf=True)
+        return user
+
     def route(self):
         self.check_origin()
         parsed = urlsplit(self.path)
         path = parsed.path
         method = self.command
+        if method == "GET" and path == "/api/ledger-templates":
+            return self.send_json(200, {"templates": templates()})
         if method == "GET" and path == "/api/me":
             user = self.current_user()
             return self.send_json(200, {"user": Accounts.public_user(user) if user else None,
@@ -235,13 +250,13 @@ class WebHandler(BaseHTTPRequestHandler):
         if method == "GET" and path in ("/api/ledgers", "/api/my-ledgers"):
             private = path == "/api/my-ledgers"
             user = self.current_user(required=private)
-            rows = self.server.store.list_ledgers(user["id"], user["is_admin"]) if private else self.server.store.list_ledgers()
+            rows = self.server.store.list_ledgers(user["id"], user["is_admin"]) if private else self.server.store.list_ledgers(public_only=True)
             return self.send_json(200, {"ledgers": [self.metadata(row, user) for row in rows]})
         if method == "POST" and path == "/api/ledgers":
             user = self.current_user(required=True, csrf=True)
             value = self.body()
-            if not isinstance(value, dict) or set(value) != {"name", "description", "fields"}:
-                raise ValueError("Expected ledger name, description and fields")
+            if not isinstance(value, dict) or not {"name", "description"} <= set(value) or set(value) - {"name", "description", "fields", "template_id", "visibility"}:
+                raise ValueError("Expected ledger name, description, fields or template_id, and optional visibility")
             result = self.server.store.create_ledger(user["id"], **value)
             result["ledger"] = self.metadata(result["ledger"], user)
             return self.send_json(201, result)
@@ -253,6 +268,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if len(parts) > 4:
                 raise StoreNotFound("API route not found")
             if method == "GET" and not operation:
+                self.ledger_access(ledger_id)
                 view = self.server.store.read(ledger_id)
                 view["ledger"] = self.metadata(view["ledger"], self.current_user())
                 return self.send_json(200, view)
@@ -264,10 +280,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.body()
                 return self.send_json(200, self.server.store.rotate_token(ledger_id, user["id"]))
             if method == "PATCH" and not operation:
-                self.current_user(required=True, csrf=True, admin=True)
+                user = self.current_user(required=True, csrf=True)
                 changes = self.body()
                 if not isinstance(changes, dict):
                     raise ValueError("Expected a metadata object")
+                metadata = self.server.store.get_ledger(ledger_id)
+                if not user['is_admin'] and (metadata['owner_id'] != user['id'] or set(changes) != {'visibility'}):
+                    raise StoreForbidden("Only administrators manage metadata; owners may change visibility")
                 ledger = self.server.store.update_ledger(ledger_id, changes)
                 return self.send_json(200, {"ledger": self.metadata(ledger, self.current_user())})
             if method == "DELETE" and not operation:
@@ -290,12 +309,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 block, duplicate = self.server.store.append(ledger_id, token, self.body(), record_id=record_id)
                 return self.send_json(200 if duplicate else 201, {"block": block, "duplicate": duplicate})
             if method == "GET" and operation == "checkpoint":
+                self.ledger_access(ledger_id, 'verify')
                 view = self.server.store.read(ledger_id)
                 if not view["verification"]["valid"]:
                     raise LedgerConflict("Cannot export a checkpoint from an invalid ledger")
                 head = view["blocks"][-1]
                 return self.send_json(200, {"schema_version": head["schema_version"], "index": head["index"], "hash": head["hash"]})
             if method == "GET" and operation == "snapshot":
+                self.ledger_access(ledger_id, 'snapshot_export')
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 index = None
                 if query:
@@ -312,9 +333,11 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.wfile.write(token)
                 return
             if method == "POST" and operation == "validate-snapshot":
+                self.ledger_access(ledger_id, 'verify')
                 report = SnapshotService(self.server.store, ledger_id).validate(self.body(MAX_SNAPSHOT_BYTES, "application/octet-stream"))
                 return self.send_json(200, report)
             if method == "POST" and operation == "verify":
+                self.ledger_access(ledger_id, 'verify')
                 if self.body() != {}:
                     raise ValueError("Expected an empty verification request")
                 return self.send_json(200, self.server.store.read(ledger_id)["verification"])

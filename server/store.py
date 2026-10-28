@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from field_schema import validate_data, validate_fields, reject_nul
+from ledger_templates import template_fields, validate_template_event
 from ledger import (LedgerConflict, MAX_BODY_BYTES, calculate_hash, canonical_json,
                     create_genesis_block, create_new_block, validate_submission, verify_chain)
 
@@ -104,6 +105,8 @@ class Store:
                 token_hash TEXT NOT NULL
             )""")
             connection.execute("CREATE INDEX IF NOT EXISTS ledger_owner_index ON ledger_registry (owner_id)")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'private'))")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS template_id TEXT")
 
     def connect(self):
         return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
@@ -120,22 +123,30 @@ class Store:
     def _public(self, connection, row):
         blocks, _ = table_names(row["id"])
         count = connection.execute(sql.SQL("SELECT COUNT(*) AS count FROM {}").format(sql.Identifier(blocks))).fetchone()["count"]
-        return {key: row[key] for key in ("id", "owner_id", "name", "description", "state", "fields", "created_at")} | {"block_count": count}
+        return {key: row[key] for key in ("id", "owner_id", "name", "description", "state", "fields", "created_at", "visibility", "template_id")} | {"block_count": count}
 
-    def create_ledger(self, owner_id, name, description, fields):
+    def create_ledger(self, owner_id, name, description, fields=None, template_id=None, visibility=None):
         owner_id = validate_label(owner_id, "Owner ID", 128)
         name = validate_label(name, "Ledger name", 80)
         description = validate_label(description, "Description", 1000, True)
+        if template_id is not None:
+            expected = template_fields(template_id)
+            if fields is not None and validate_fields(fields) != expected:
+                raise ValueError("Template fields cannot be changed; choose a custom ledger instead")
+            fields = expected
         fields = validate_fields(fields)
+        visibility = visibility if visibility is not None else ('private' if template_id else 'public')
+        if visibility not in ('public', 'private'):
+            raise ValueError("Visibility must be public or private")
         ledger_id = str(uuid.uuid4())
         blocks, secret_table = table_names(ledger_id)
         write_token = secrets.token_urlsafe(32)
         genesis = ledger_genesis(ledger_id, fields)
         with self.connect() as connection:
             connection.execute("""INSERT INTO ledger_registry
-                (id, owner_id, name, description, state, fields, created_at, token_hash)
-                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)""",
-                (ledger_id, owner_id, name, description, Jsonb(fields), time.time_ns() // 1000000, token_hash(write_token)))
+                (id, owner_id, name, description, state, fields, created_at, token_hash, visibility, template_id)
+                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s)""",
+                (ledger_id, owner_id, name, description, Jsonb(fields), time.time_ns() // 1000000, token_hash(write_token), visibility, template_id))
             connection.execute(sql.SQL("""CREATE TABLE {} (
                 position BIGINT PRIMARY KEY CHECK (position >= 0),
                 record_id TEXT UNIQUE NOT NULL,
@@ -152,11 +163,13 @@ class Store:
             metadata = self._public(connection, self._metadata(connection, ledger_id))
         return {"ledger": metadata, "write_token": write_token, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
 
-    def list_ledgers(self, owner_id=None, admin=False):
+    def list_ledgers(self, owner_id=None, admin=False, public_only=False):
         with self.connect() as connection:
             query = "SELECT * FROM ledger_registry"
             parameters = ()
-            if owner_id is not None and not admin:
+            if public_only:
+                query += " WHERE visibility = 'public'"
+            elif owner_id is not None and not admin:
                 query += " WHERE owner_id = %s"
                 parameters = (owner_id,)
             # Share locks keep tables alive while counting, even during admin deletion.
@@ -186,8 +199,10 @@ class Store:
 
     def update_ledger(self, ledger_id, changes=None, **updates):
         changes = dict(changes or {}) | updates
-        if not changes or set(changes) - {"name", "description", "state"}:
-            raise ValueError("Only ledger name, description and state can be changed")
+        if not changes or set(changes) - {"name", "description", "state", "visibility"}:
+            raise ValueError("Only ledger name, description, state and visibility can be changed")
+        if "visibility" in changes and changes['visibility'] not in ('public', 'private'):
+            raise ValueError("Visibility must be public or private")
         if "name" in changes:
             changes["name"] = validate_label(changes["name"], "Ledger name", 80)
         if "description" in changes:
@@ -238,9 +253,23 @@ class Store:
             row = self._metadata(connection, ledger_id, lock=True)
             if not isinstance(token, str) or not 20 <= len(token) <= 256 or not hmac.compare_digest(token_hash(token), row["token_hash"]):
                 raise StoreForbidden("Invalid ledger write token")
+            return self.append_authorized(ledger_id, submission, record_id, connection)
+
+    def append_authorized(self, ledger_id, submission, record_id=None, connection=None):
+        """Internal trusted service boundary; HTTP callers must authenticate first."""
+        if connection is None:
+            with self.connect() as transaction:
+                return self.append_authorized(ledger_id, submission, record_id, transaction)
+        if len(canonical_json(submission)) > MAX_BODY_BYTES:
+            raise ValueError("Submission is too large")
+        row = self._metadata(connection, ledger_id, lock=True)
+        return self._append_event(connection, row, ledger_id, submission, record_id)
+
+    def _append_event(self, connection, row, ledger_id, submission, record_id):
             if row["state"] != "active":
                 raise LedgerConflict("This ledger does not accept new blocks in its current state")
             submission = prepare_submission(submission, row["fields"], record_id)
+            validate_template_event(submission['data'], row.get('template_id'))
             blocks = self._blocks(connection, ledger_id)
             if not verify_ledger(blocks, row)["valid"]:
                 raise LedgerConflict("Ledger verification failed; no data was changed")

@@ -16,8 +16,8 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 
 | Phase | Scope | Status | Evidence / blocker |
 |---|---|---|---|
-| 0 | Audit and baseline | BASELINE RECORDED; database blocked | 38 backend, 8 launcher, 8 frontend tests passed; 13 PostgreSQL tests skipped. Production frontend build passed. Existing local PostgreSQL service runs but copied credentials fail password authentication. No original database changes. |
-| 1 | Templates and schema validation | IN PROGRESS | Existing fixed-schema engine will be reused. |
+| 0 | Audit and baseline | PASSED | 38 backend, 8 launcher, 8 frontend tests passed; 13 PostgreSQL tests skipped. Production frontend build passed. Credentials repaired by user; chainguard and chainguard_test connections verified. Original database untouched. |
+| 1 | Templates and schema validation | PASSED | Four templates, timestamp/identifier validation, private defaults, visibility authorization. All 53 server tests and 8 launcher tests passed with real chainguard_test PostgreSQL. |
 | 2 | REST and inbound webhooks | PENDING | Focused integration module. |
 | 3 | API policy enforcement | PENDING | Persistent PostgreSQL configuration and limits. |
 | 4 | Ledger integrity regression | PENDING | Preserve canonical schema v2 engine. |
@@ -34,3 +34,5 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 The user authorized independent work when a feature is blocked. Implementation modules may be prepared in parallel; integrated phase acceptance and commits are recorded sequentially. A blocked acceptance check is never counted as passed. No feature is complete merely because a UI control or service skeleton exists.
 
 Baseline: server test discovery ran 51 tests, with 38 passed and 13 database tests skipped; tools ran 8 passed; frontend ran 8 passed. Frontend production build was written to a temporary directory. Source was clean before implementation. The supplied blueprint has been retained in `docs/CHAINGUARD_BLUEPRINT.md` for traceability.
+
+Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, server/test_templates.py, tools/run_checks.py, .gitignore. GET /api/ledger-templates added; creation accepts template_id/visibility; visibility PATCH is owner/admin protected. Existing reads remain public for generic ledgers. Private access returns 404 to unauthorized callers. No historical payload changes. Backend: 53/53; launcher: 8/8. Snapshot authorization was implemented with visibility to avoid a temporary private-data exposure.
