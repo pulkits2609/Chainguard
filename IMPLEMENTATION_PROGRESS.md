@@ -23,7 +23,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 | 4 | Ledger integrity regression | PASSED | 100 sequential + 20 concurrent appends, continuity/link checks, stored-head deletion detection, legacy hashes/genesis preserved. Database guards reject original/unrelated targets before connecting. |
 | 5 | Signed checkpoints and offline CLI | PASSED | Ed25519 checkpoints, persistent protected key binding, exported trusted key, offline CLI, full-history versus anchored-prefix scopes, wrong-key/tamper/key-loss regressions. |
 | 6 | Private snapshot authorization | PASSED | Existing Fernet formats and original snapshot tests preserved; HTTP checks reject anonymous/cross-owner private exports and validation, accept authorized owner with CSRF. |
-| 7 | Shipment capabilities | PENDING | Redacted records and explicit proof limitations. |
+| 7 | Shipment capabilities | PASSED | Hashed scoped grants, expiry/revocation, redacted fields, bounded timeline/proof, persistent throttle, separate signature/server/independent-history labels. Actual browser polling and revoked-state clearing verified. |
 | 8 | Security audit | PENDING | Sanitized dedicated PostgreSQL records. |
 | 9 | React management and customer UI | PENDING | Reuse existing components/styles/session flow. |
 | 10 | Deployment and documentation | PENDING | Preserve Windows/Ubuntu launch model. |
@@ -65,4 +65,10 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Status: PASSED
 - Evidence: Existing Fernet formats and original snapshot tests preserved; HTTP checks reject anonymous/cross-owner private exports and validation, accept authorized owner with CSRF.
 - Files in checkpoint: IMPLEMENTATION_PROGRESS.md; snapshot route controls were intentionally delivered with Phase 1 visibility so private ledgers were never temporarily exposed.
+- API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+### Phase 7 checkpoint
+- Status: PASSED
+- Evidence: Hashed scoped grants, expiry/revocation, redacted fields, bounded timeline/proof, persistent throttle, separate signature/server/independent-history labels. Actual browser polling and revoked-state clearing verified.
+- Files in checkpoint: server/test_shipment_access.py
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
