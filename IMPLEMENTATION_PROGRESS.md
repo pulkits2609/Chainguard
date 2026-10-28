@@ -19,7 +19,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 | 0 | Audit and baseline | PASSED | 38 backend, 8 launcher, 8 frontend tests passed; 13 PostgreSQL tests skipped. Production frontend build passed. Credentials repaired by user; chainguard and chainguard_test connections verified. Original database untouched. |
 | 1 | Templates and schema validation | PASSED | Four templates, timestamp/identifier validation, private defaults, visibility authorization. All 53 server tests and 8 launcher tests passed with real chainguard_test PostgreSQL. |
 | 2 | REST and inbound webhooks | PASSED | REST/webhook bearer and raw-body HMAC; durable scoped idempotency; actual independent AudioShare acceptance. 14 integration tests and HTTP acceptance passed. |
-| 3 | API policy enforcement | PENDING | Persistent PostgreSQL configuration and limits. |
+| 3 | API policy enforcement | PASSED | Session/CSRF administration, scopes intersect policies, persistent source/integration limits, CIDRs, expiry, body caps, rotation/revocation. Four real HTTP acceptance tests passed. |
 | 4 | Ledger integrity regression | PENDING | Preserve canonical schema v2 engine. |
 | 5 | Signed checkpoints and offline CLI | PENDING | Existing cryptography dependency supports Ed25519. |
 | 6 | Private snapshot authorization | PENDING | Preserve Fernet format v2 and old fixtures. |
@@ -41,4 +41,10 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Status: PASSED
 - Evidence: REST/webhook bearer and raw-body HMAC; durable scoped idempotency; actual independent AudioShare acceptance. 14 integration tests and HTTP acceptance passed.
 - Files in checkpoint: server/integrations.py, server/security_audit.py, server/test_integrations.py
+- API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+### Phase 3 checkpoint
+- Status: PASSED
+- Evidence: Session/CSRF administration, scopes intersect policies, persistent source/integration limits, CIDRs, expiry, body caps, rotation/revocation. Four real HTTP acceptance tests passed.
+- Files in checkpoint: server/web_app.py, server/chainguard_routes.py, server/checkpoints.py, server/shipment_access.py, server/test_chainguard_http.py, tools/verify_checkpoint.py
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.

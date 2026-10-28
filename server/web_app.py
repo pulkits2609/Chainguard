@@ -24,6 +24,9 @@ from settings import environment_bool, load_environment, public_origin
 from snapshots import MAX_SNAPSHOT_BYTES
 from store import Store, StoreForbidden, StoreNotFound
 from ledger_templates import templates
+from chainguard_routes import initialize_services, route as chainguard_route
+from integrations import IntegrationError, is_integration_token
+from shipment_access import ShipmentRateLimit
 
 
 class HttpError(Exception):
@@ -59,7 +62,7 @@ class WebServer(ThreadingHTTPServer):
     request_queue_size = 32
 
     def __init__(self, address, store, accounts, frontend, allowed_hosts=None,
-                 origin=None, secure_cookies=True, development=False):
+                 origin=None, secure_cookies=True, development=False, key_directory=None):
         self.store, self.accounts = store, accounts
         self.frontend = Path(frontend).resolve()
         self.origin = public_origin(origin) if origin else None
@@ -72,6 +75,7 @@ class WebServer(ThreadingHTTPServer):
             self.allowed_hosts.add(urlsplit(self.origin).hostname)
         self.login_limits = LoginLimits()
         self.workers = threading.BoundedSemaphore(32)
+        initialize_services(self, key_directory)
         super().__init__(address, WebHandler)
 
     def process_request(self, request, client_address):
@@ -110,6 +114,8 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def send_json(self, status, value, cookie=None):
         body = json.dumps(value, ensure_ascii=True, allow_nan=False).encode("utf-8")
+        if len(body) > 8 * 1024 * 1024:
+            raise OverflowError('Response exceeds 8 MiB; use bounded record exports')
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -148,7 +154,9 @@ class WebHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise HttpError(403, "Only configured hosts and same-origin browser requests are allowed") from None
 
-    def body(self, maximum=MAX_BODY_BYTES, content_type="application/json"):
+    def body(self, maximum=MAX_BODY_BYTES, content_type="application/json", raw=False):
+        if content_type == 'application/json':
+            maximum = min(maximum, self.server.integrations.max_body_bytes)
         sizes = self.headers.get_all("Content-Length", [])
         if self.headers.get("Transfer-Encoding") or len(sizes) != 1:
             raise ValueError("Exactly one Content-Length is required; chunked bodies are not supported")
@@ -158,12 +166,12 @@ class WebHandler(BaseHTTPRequestHandler):
             raise ValueError("Invalid Content-Length") from None
         if not 0 <= size <= maximum:
             raise HttpError(413, "Request body exceeds the allowed size")
-        if self.headers.get_content_type() != content_type:
+        if len(self.headers.get_all('Content-Type', [])) != 1 or self.headers.get_content_type() != content_type:
             raise ValueError("Content-Type must be " + content_type)
-        raw = self.rfile.read(size)
-        if len(raw) != size:
+        data = self.rfile.read(size)
+        if len(data) != size:
             raise ValueError("Incomplete request body")
-        return parse_json(raw) if content_type == "application/json" else raw
+        return parse_json(data) if content_type == "application/json" and not raw else data
 
     def session_token(self):
         cookies = SimpleCookie()
@@ -206,7 +214,20 @@ class WebHandler(BaseHTTPRequestHandler):
         metadata = self.server.store.get_ledger(ledger_id)
         user = self.current_user()
         if self.headers.get("Authorization"):
-            raise StoreForbidden("This credential does not permit the requested operation")
+            authorization = self.headers.get_all('Authorization', [])
+            if len(authorization) != 1 or not authorization[0].startswith('Bearer '):
+                raise StoreForbidden('A valid bearer token is required')
+            token = authorization[0][7:]
+            if not is_integration_token(token):
+                raise StoreForbidden("This credential does not permit the requested operation")
+            size = 0
+            if self.command != 'GET':
+                sizes = self.headers.get_all('Content-Length', [])
+                if self.headers.get('Transfer-Encoding') or len(sizes) != 1 or not sizes[0].isascii() or not sizes[0].isdecimal():
+                    raise ValueError('Exactly one valid Content-Length is required')
+                size = int(sizes[0])
+            self.server.integrations.authorize(token, ledger_id, operation, self.client_address[0], body_size=size)
+            return None
         if metadata["visibility"] == "private" and not (user and (
                 user['id'] == metadata['owner_id'] or user['is_admin'])):
             raise StoreNotFound("Ledger not found")
@@ -219,6 +240,8 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = parsed.path
         method = self.command
+        if chainguard_route(self, parsed):
+            return
         if method == "GET" and path == "/api/ledger-templates":
             return self.send_json(200, {"templates": templates()})
         if method == "GET" and path == "/api/me":
@@ -298,6 +321,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.server.store.delete_ledger(ledger_id)
                 return self.send_json(200, {"deleted": True})
             if method == "POST" and operation == "blocks":
+                self.server.integrations.throttle(self.client_address[0])
                 authorization = self.headers.get_all("Authorization", [])
                 if len(authorization) != 1 or not authorization[0].startswith("Bearer "):
                     raise HttpError(401, "A ledger bearer token is required")
@@ -306,7 +330,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 if len(identifiers) > 1:
                     raise ValueError("Send at most one Idempotency-Key header")
                 record_id = identifiers[0] if identifiers else None
-                block, duplicate = self.server.store.append(ledger_id, token, self.body(), record_id=record_id)
+                raw = self.body(raw=True)
+                if is_integration_token(token):
+                    block, duplicate = self.server.integrations.append(token, ledger_id, raw, record_id,
+                                                                      self.client_address[0], len(raw), throttled=True)
+                else:
+                    block, duplicate = self.server.store.append(ledger_id, token, parse_json(raw), record_id=record_id)
                 return self.send_json(200 if duplicate else 201, {"block": block, "duplicate": duplicate})
             if method == "GET" and operation == "checkpoint":
                 self.ledger_access(ledger_id, 'verify')
@@ -340,7 +369,10 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.ledger_access(ledger_id, 'verify')
                 if self.body() != {}:
                     raise ValueError("Expected an empty verification request")
-                return self.send_json(200, self.server.store.read(ledger_id)["verification"])
+                report = self.server.store.read(ledger_id)["verification"]
+                if not report['valid']:
+                    self.server.audit.record('integrity', 'verify', 'failed', 'chain_mismatch', ledger_id=ledger_id, severity='error')
+                return self.send_json(200, report)
         if path.startswith("/api/"):
             raise HttpError(404, "API route not found")
         if method != "GET":
@@ -368,9 +400,39 @@ class WebHandler(BaseHTTPRequestHandler):
             self.route()
         except HttpError as error:
             self.send_json(error.status, {"error": error.message})
+        except IntegrationError as error:
+            if error.reason_code == 'rate_limited':
+                try:
+                    self.server.audit.record('rate_limit', 'request', 'rejected', 'rate_limited',
+                                             severity='warning', source_ip=self.client_address[0])
+                except (psycopg.Error, OSError):
+                    pass
+            self.send_response(error.status)
+            body = json.dumps({'error': error.message}).encode('utf-8')
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            if error.retry_after is not None:
+                self.send_header('Retry-After', str(error.retry_after))
+            self.security_headers()
+            self.end_headers()
+            self.wfile.write(body)
+        except ShipmentRateLimit as error:
+            body = json.dumps({'error': str(error)}).encode('utf-8')
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Retry-After', str(error.retry_after))
+            self.security_headers()
+            self.end_headers()
+            self.wfile.write(body)
         except StoreNotFound as error:
             self.send_json(404, {"error": str(error)})
         except StoreForbidden as error:
+            try:
+                self.server.audit.record('authorization', 'request', 'rejected', 'access_denied',
+                                         severity='warning', source_ip=self.client_address[0])
+            except (psycopg.Error, OSError):
+                pass  # Denial stays effective even when telemetry storage is unavailable.
             self.send_json(403, {"error": str(error)})
         except LedgerConflict as error:
             self.send_json(409, {"error": str(error)})
@@ -390,6 +452,10 @@ class WebHandler(BaseHTTPRequestHandler):
     do_POST = handle_request
     do_PATCH = handle_request
     do_DELETE = handle_request
+
+    def log_request(self, code='-', size='-'):
+        # Never write query strings, Authorization or customer capabilities to access logs.
+        self.log_message('%s %s %s', self.command, urlsplit(self.path).path[:200], str(code))
 
 
 def main():
@@ -418,6 +484,9 @@ def main():
         database_url = args.database_url or os.environ.get("LEDGER_DATABASE_URL")
         if not database_url:
             raise ValueError("Set LEDGER_DATABASE_URL to your local PostgreSQL database")
+        from psycopg.conninfo import conninfo_to_dict
+        if conninfo_to_dict(database_url).get('dbname') != 'chainguard':
+            raise ValueError('ChainGuard startup requires database chainguard; refusing another database')
         accounts = Accounts(database_url)
         store = Store(database_url)
         if args.init_admin:
@@ -427,7 +496,9 @@ def main():
             print("Administrator created." if created else "Administrator already exists; password was not changed.")
             return 0
         if args.check_db:
-            print("PostgreSQL is reachable and the account/ledger tables are ready.")
+            from types import SimpleNamespace
+            initialize_services(SimpleNamespace(store=store))
+            print("PostgreSQL is reachable and all ChainGuard tables and persistent keys are ready.")
             return 0
         if args.verify:
             if not args.ledger_id:
