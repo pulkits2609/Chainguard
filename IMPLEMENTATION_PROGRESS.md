@@ -21,7 +21,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 | 2 | REST and inbound webhooks | PASSED | REST/webhook bearer and raw-body HMAC; durable scoped idempotency; actual independent AudioShare acceptance. 14 integration tests and HTTP acceptance passed. |
 | 3 | API policy enforcement | PASSED | Session/CSRF administration, scopes intersect policies, persistent source/integration limits, CIDRs, expiry, body caps, rotation/revocation. Four real HTTP acceptance tests passed. |
 | 4 | Ledger integrity regression | PASSED | 100 sequential + 20 concurrent appends, continuity/link checks, stored-head deletion detection, legacy hashes/genesis preserved. Database guards reject original/unrelated targets before connecting. |
-| 5 | Signed checkpoints and offline CLI | PENDING | Existing cryptography dependency supports Ed25519. |
+| 5 | Signed checkpoints and offline CLI | PASSED | Ed25519 checkpoints, persistent protected key binding, exported trusted key, offline CLI, full-history versus anchored-prefix scopes, wrong-key/tamper/key-loss regressions. |
 | 6 | Private snapshot authorization | PENDING | Preserve Fernet format v2 and old fixtures. |
 | 7 | Shipment capabilities | PENDING | Redacted records and explicit proof limitations. |
 | 8 | Security audit | PENDING | Sanitized dedicated PostgreSQL records. |
@@ -53,4 +53,10 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Status: PASSED
 - Evidence: 100 sequential + 20 concurrent appends, continuity/link checks, stored-head deletion detection, legacy hashes/genesis preserved. Database guards reject original/unrelated targets before connecting.
 - Files in checkpoint: server/store.py, server/accounts.py, server/settings.py, server/test_store.py, server/test_templates.py, server/test_integrity_acceptance.py
+- API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+### Phase 5 checkpoint
+- Status: PASSED
+- Evidence: Ed25519 checkpoints, persistent protected key binding, exported trusted key, offline CLI, full-history versus anchored-prefix scopes, wrong-key/tamper/key-loss regressions.
+- Files in checkpoint: server/test_checkpoints.py
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
