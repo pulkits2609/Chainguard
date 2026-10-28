@@ -10,7 +10,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 - Preserve historical block serialization, genesis, SHA-256 hashing, and snapshot formats.
 - Preserve generic public ledger compatibility; new templates are private by default.
 - Customer checkpoint signatures and server-checked redacted records have distinct trust guarantees.
-- Genuine external integration remains PENDING until a separate running application generates and delivers an actual event.
+- Genuine external integration PASSED using actual session/lobby creation in the independent existing AudioShare application; see docs/EXTERNAL_INTEGRATION_EVIDENCE.md.
 
 ## Phase ledger
 
@@ -96,3 +96,13 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Evidence: 90 backend + 8 launcher + 13 frontend tests passed, no skips/failures; production build passed. Genuine AudioShare session/lobby REST/webhook/checkpoint/offline acceptance passed twice. No remote push or original database changes.
 - Files in checkpoint: tools/test_external_integration.py, docs/EXTERNAL_INTEGRATION_EVIDENCE.md
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+## Final handoff
+
+- Final verification: 90 backend, 8 launcher, 13 frontend tests; zero skips/failures. Production build passed.
+- Independent security review: APPROVE after all six findings were resolved.
+- Live local ChainGuard startup and administrator login/overview/logout passed at http://127.0.0.1:8000.
+- Local administrator: chainguard_admin. Password is only in ignored .env.
+- Actual Ubuntu runtime/systemd acceptance remains unverified; scripts passed syntax checks. No other implementation dependency is blocked.
+- Full delivery report: IMPLEMENTATION_REPORT.md.
+- No remote pushes, no original database/source edits, no committed local credentials.
