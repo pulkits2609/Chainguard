@@ -28,6 +28,22 @@ export function ledgerPath(id) {
   return `/api/ledgers/${encodeURIComponent(id)}`;
 }
 
+export async function customerRequest(shipment, operation, token, options = {}) {
+  if (!['events', 'proof'].includes(operation)) throw new Error('Unsupported customer operation.');
+  const query = options.query ? `?${options.query}` : '';
+  const response = await fetch(`/api/customer/shipments/${encodeURIComponent(shipment)}/${operation}${query}`, {
+    method: 'GET', credentials: 'omit', headers: { Authorization: `Bearer ${token}` },
+    signal: options.signal || AbortSignal.timeout(15000),
+  });
+  const body = await response.json().catch(() => { throw new Error('The shipment service did not return JSON.'); });
+  if (!response.ok) {
+    const error = new Error(body.error || `Shipment access failed (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+
 export async function downloadSnapshot(ledgerId, blockIndex) {
   let path = `${ledgerPath(ledgerId)}/snapshot`;
   if (blockIndex !== undefined) path += `?block=${blockIndex}`;

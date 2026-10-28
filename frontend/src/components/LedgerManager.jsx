@@ -49,17 +49,18 @@ function Integration({ ledger, initial, onClose }) {
   </section>;
 }
 
-function AdminEdit({ ledger, onSaved, onClose }) {
+function AdminEdit({ ledger, user, onSaved, onClose }) {
   const [name, setName] = useState(ledger.name);
   const [description, setDescription] = useState(ledger.description);
   const [state, setState] = useState(ledger.state);
+  const [visibility, setVisibility] = useState(ledger.visibility || 'public');
   const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      await apiRequest(ledgerPath(ledger.id), { method: 'PATCH', body: JSON.stringify({ name, description, state }) });
+      await apiRequest(ledgerPath(ledger.id), { method: 'PATCH', body: JSON.stringify(user.is_admin ? { name, description, state, visibility } : { visibility }) });
       onSaved();
     } catch (requestError) { setError(requestError.message); } finally { setBusy(false); }
   }
@@ -73,14 +74,16 @@ function AdminEdit({ ledger, onSaved, onClose }) {
   }
   return <section className="form-panel">
     <div className="details-heading"><h2>Manage · {ledger.name}</h2><button disabled={busy} onClick={onClose}>Close</button></div>
-    <p>Admin changes affect the ledger’s label and availability. Stored blocks and their structure remain immutable.</p>
+    <p>Owners can change visibility. Administrators can also manage labels and availability. Stored blocks and their structure remain immutable.</p>
     <form onSubmit={submit}>
-      <label>Name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)}/></label>
+      {user.is_admin && <><label>Name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)}/></label>
       <label>Description<textarea maxLength={500} value={description} onChange={event => setDescription(event.target.value)}/></label>
-      <label>State<select value={state} onChange={event => setState(event.target.value)}><option value="active">Active · writes allowed</option><option value="read_only">Read-only · no new blocks</option><option value="archived">Archived · no new blocks</option></select></label>
+      <label>State<select value={state} onChange={event => setState(event.target.value)}><option value="active">Active · writes allowed</option><option value="read_only">Read-only · no new blocks</option><option value="archived">Archived · no new blocks</option></select></label></>}
+      <label>Visibility<select value={visibility} onChange={event => setVisibility(event.target.value)}><option value="private">Private · owner and administrator only</option><option value="public">Public · content and snapshots available to everyone</option></select></label>
+      {visibility === 'public' && <p className="notice warning">Public visibility exposes full block payloads, including any internal fields. Use private visibility for shipment data.</p>}
       <button disabled={busy}>Save changes</button>
     </form>
-    <details className="delete-section"><summary>Delete this ledger</summary><p>Deleting removes this ledger and its encryption key. Its downloaded snapshots can no longer be validated. This cannot be undone.</p><label>Type “{ledger.name}” to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)}/></label><button className="danger" disabled={busy || confirmation !== ledger.name} onClick={remove}>Delete ledger permanently</button></details>
+    {user.is_admin && <details className="delete-section"><summary>Delete this ledger</summary><p>Deleting removes this ledger and its encryption key. Its downloaded snapshots can no longer be validated. This cannot be undone.</p><label>Type “{ledger.name}” to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)}/></label><button className="danger" disabled={busy || confirmation !== ledger.name} onClick={remove}>Delete ledger permanently</button></details>}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </section>;
 }
@@ -109,11 +112,11 @@ export default function LedgerManager({ user, onOpen }) {
     {error && <p className="notice warning" role="alert">{error}</p>}
     {creating && <CreateLedger onCancel={() => setCreating(false)} onCreated={result => { setCreating(false); setIntegration({ ledger: result.ledger, initial: result }); setRefresh(value => value + 1); }}/>}
     {integration && <Integration key={integration.ledger.id} ledger={integration.ledger} initial={integration.initial} onClose={() => setIntegration(null)}/>}
-    {editing && <AdminEdit key={editing.id} ledger={editing} onSaved={changed} onClose={() => setEditing(null)}/>}
+    {editing && <AdminEdit key={editing.id} ledger={editing} user={user} onSaved={changed} onClose={() => setEditing(null)}/>}
     {busy && <p>Loading your ledgers…</p>}
     <LedgerRows ledgers={ledgers} onOpen={onOpen}>{ledger => <>
       {(ledger.is_owner || (!user.is_admin && ledger.is_owner !== false)) && <button onClick={() => { setIntegration({ ledger }); setEditing(null); setCreating(false); }}>Integration</button>}
-      {user.is_admin && <button onClick={() => { setEditing(ledger); setIntegration(null); setCreating(false); }}>Manage</button>}
+      {(user.is_admin || ledger.is_owner) && <button onClick={() => { setEditing(ledger); setIntegration(null); setCreating(false); }}>Manage</button>}
     </>}</LedgerRows>
     {!busy && !ledgers.length && <p className="empty-chain">You have not created a ledger yet.</p>}
   </section>;

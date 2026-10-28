@@ -25,7 +25,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 | 6 | Private snapshot authorization | PASSED | Existing Fernet formats and original snapshot tests preserved; HTTP checks reject anonymous/cross-owner private exports and validation, accept authorized owner with CSRF. |
 | 7 | Shipment capabilities | PASSED | Hashed scoped grants, expiry/revocation, redacted fields, bounded timeline/proof, persistent throttle, separate signature/server/independent-history labels. Actual browser polling and revoked-state clearing verified. |
 | 8 | Security audit | PASSED | Dedicated sanitized telemetry, administrator filters/pagination, retention, configuration and grant/checkpoint audit atomicity. All six independent review findings fixed; final review APPROVE. |
-| 9 | React management and customer UI | PENDING | Reuse existing components/styles/session flow. |
+| 9 | React management and customer UI | PASSED | Complete React dashboard/customer flow; 13 frontend tests and production build. Actual Edge UI smoke, browser/offline crypto, polling, revocation and narrow-layout inspection documented. |
 | 10 | Deployment and documentation | PENDING | Preserve Windows/Ubuntu launch model. |
 | 11 | End-to-end security testing | PENDING | Genuine external producer and database access must be verified. |
 
@@ -77,4 +77,10 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Status: PASSED
 - Evidence: Dedicated sanitized telemetry, administrator filters/pagination, retention, configuration and grant/checkpoint audit atomicity. All six independent review findings fixed; final review APPROVE.
 - Files in checkpoint: docs/SECURITY_REVIEW.md
+- API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+### Phase 9 checkpoint
+- Status: PASSED
+- Evidence: Complete React dashboard/customer flow; 13 frontend tests and production build. Actual Edge UI smoke, browser/offline crypto, polling, revocation and narrow-layout inspection documented.
+- Files in checkpoint: frontend, docs/BROWSER_SMOKE.md
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.

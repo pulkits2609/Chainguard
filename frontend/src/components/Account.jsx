@@ -26,7 +26,7 @@ export default function Account({ onSuccess }) {
 
   return <section className="form-panel account-panel">
     <h1>{register ? 'Create account' : 'Log in'}</h1>
-    <p>{register ? 'An account lets you create ledgers. Reading and downloading remain public.' : 'Open your ledgers and their integration settings.'}</p>
+    <p>{register ? 'Create and secure your own ledgers. Private records require authorization.' : 'Open your ledgers and their integration settings.'}</p>
     <form onSubmit={submit}>
       <label>Username<input required autoComplete="username" maxLength={32} value={username} onChange={event => setUsername(event.target.value)}/></label>
       <label>Password<input required type="password" autoComplete={register ? 'new-password' : 'current-password'} minLength={register ? 12 : undefined} maxLength={128} value={password} onChange={event => setPassword(event.target.value)}/></label>

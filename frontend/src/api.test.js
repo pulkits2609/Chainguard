@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { apiRequest, ledgerPath } from './api.js';
+import { apiRequest, customerRequest, ledgerPath } from './api.js';
 
 test('API uses cookie sessions and current CSRF without persisting secrets', async () => {
   const original = globalThis.fetch;
@@ -30,6 +30,26 @@ test('API uses cookie sessions and current CSRF without persisting secrets', asy
     assert.ok(requests.every(request => !request.options.headers.Authorization));
     assert.equal(ledgerPath('a/b'), '/api/ledgers/a%2Fb');
   } finally { globalThis.fetch = original; }
+});
+
+test('customer capability requests never carry cookies or CSRF and do not expire admin sessions', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let request;
+  let dispatched = false;
+  globalThis.window = { dispatchEvent: () => { dispatched = true; } };
+  globalThis.fetch = async (path, options) => {
+    request = { path, options };
+    return { ok: false, status: 401, json: async () => ({ error: 'Grant expired' }) };
+  };
+  try {
+    await assert.rejects(customerRequest('shipment/a', 'events', 'grant.secret'), error => error.status === 401 && error.message === 'Grant expired');
+    assert.equal(request.path, '/api/customer/shipments/shipment%2Fa/events');
+    assert.equal(request.options.credentials, 'omit');
+    assert.deepEqual(request.options.headers, { Authorization: 'Bearer grant.secret' });
+    assert.equal(dispatched, false);
+    await assert.rejects(customerRequest('shipment', '../admin', 'token'), /Unsupported customer operation/);
+  } finally { globalThis.fetch = originalFetch; globalThis.window = originalWindow; }
 });
 
 test('binary validation preserves content type and caller cancellation', async () => {
