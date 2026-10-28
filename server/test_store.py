@@ -308,6 +308,12 @@ class PostgreSQLStoreTests(unittest.TestCase):
         with self.store.connect() as connection:
             connection.execute(sql.SQL("UPDATE {} SET record = %s WHERE position = 1")
                                .format(sql.Identifier(table_names(ledger_id)[0])), (Jsonb(blocks[1]),))
+        # The registry head catches a rewritten suffix even when its links are consistent.
+        self.assertFalse(self.store.read(ledger_id)["verification"]["valid"])
+        # A database administrator can also replace registry metadata. The external
+        # encrypted receipt must still detect this complete, internally consistent rewrite.
+        with self.store.connect() as connection:
+            connection.execute('UPDATE ledger_registry SET head_hash=%s WHERE id=%s', (blocks[1]['hash'],ledger_id))
         self.assertTrue(self.store.read(ledger_id)["verification"]["valid"])
         self.assertFalse(service.validate(token)["valid"])
 

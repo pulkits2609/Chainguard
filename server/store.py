@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 
 from field_schema import validate_data, validate_fields, reject_nul
 from ledger_templates import template_fields, validate_template_event
+from settings import require_chainguard_database
 from ledger import (LedgerConflict, MAX_BODY_BYTES, calculate_hash, canonical_json,
                     create_genesis_block, create_new_block, validate_submission, verify_chain)
 
@@ -79,6 +80,11 @@ def verify_ledger(blocks, metadata):
         except (ValueError, TypeError, KeyError) as error:
             report["errors"].append({"index": position, "message": "Data schema: " + str(error)})
     report["valid"] = not report["errors"]
+    if metadata.get('head_index') is not None:
+        head = blocks[-1] if blocks and isinstance(blocks[-1], dict) else {}
+        if (metadata['head_index'] != len(blocks) - 1 or metadata.get('head_hash') != head.get('hash')):
+            report['errors'].append({'index': None, 'message': 'Stored chain head does not match the available history'})
+            report['valid'] = False
     return report
 
 
@@ -92,6 +98,7 @@ def validate_label(value, label, maximum, allow_empty=False):
 
 class Store:
     def __init__(self, database_url):
+        require_chainguard_database(database_url)
         self.database_url = database_url
         with self.connect() as connection:
             connection.execute("""CREATE TABLE IF NOT EXISTS ledger_registry (
@@ -107,6 +114,14 @@ class Store:
             connection.execute("CREATE INDEX IF NOT EXISTS ledger_owner_index ON ledger_registry (owner_id)")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'private'))")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS template_id TEXT")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS head_index BIGINT")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS head_hash TEXT")
+            # Initialize metadata only for verifiable legacy histories. Never rewrite blocks.
+            for row in connection.execute('SELECT * FROM ledger_registry WHERE head_index IS NULL FOR UPDATE').fetchall():
+                blocks = self._blocks(connection, row['id'])
+                if verify_ledger(blocks, row)['valid']:
+                    connection.execute('UPDATE ledger_registry SET head_index=%s,head_hash=%s WHERE id=%s',
+                                       (blocks[-1]['index'], blocks[-1]['hash'], row['id']))
 
     def connect(self):
         return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
@@ -160,6 +175,7 @@ class Store:
                                .format(sql.Identifier(blocks)), (Jsonb(genesis),))
             connection.execute(sql.SQL("INSERT INTO {} (snapshot_key) VALUES (%s)").format(sql.Identifier(secret_table)),
                                (Fernet.generate_key().decode("ascii"),))
+            connection.execute('UPDATE ledger_registry SET head_index=0,head_hash=%s WHERE id=%s', (genesis['hash'], ledger_id))
             metadata = self._public(connection, self._metadata(connection, ledger_id))
         return {"ledger": metadata, "write_token": write_token, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
 
@@ -266,20 +282,22 @@ class Store:
         return self._append_event(connection, row, ledger_id, submission, record_id)
 
     def _append_event(self, connection, row, ledger_id, submission, record_id):
-            if row["state"] != "active":
-                raise LedgerConflict("This ledger does not accept new blocks in its current state")
-            submission = prepare_submission(submission, row["fields"], record_id)
-            validate_template_event(submission['data'], row.get('template_id'))
-            blocks = self._blocks(connection, ledger_id)
-            if not verify_ledger(blocks, row)["valid"]:
-                raise LedgerConflict("Ledger verification failed; no data was changed")
-            for block in blocks:
-                if block["record_id"] == submission["record_id"]:
-                    if canonical_json(block["data"]) != canonical_json(submission["data"]):
-                        raise LedgerConflict("This record_id already has different data")
-                    return block, True
-            block = create_new_block(blocks[-1], submission)
-            block_table, _ = table_names(ledger_id)
-            connection.execute(sql.SQL("INSERT INTO {} (position, record_id, record) VALUES (%s, %s, %s)")
-                               .format(sql.Identifier(block_table)), (block["index"], block["record_id"], Jsonb(block)))
-            return block, False
+        if row["state"] != "active":
+            raise LedgerConflict("This ledger does not accept new blocks in its current state")
+        submission = prepare_submission(submission, row["fields"], record_id)
+        validate_template_event(submission['data'], row.get('template_id'))
+        blocks = self._blocks(connection, ledger_id)
+        if not verify_ledger(blocks, row)["valid"]:
+            raise LedgerConflict("Ledger verification failed; no data was changed")
+        for block in blocks:
+            if block["record_id"] == submission["record_id"]:
+                if canonical_json(block["data"]) != canonical_json(submission["data"]):
+                    raise LedgerConflict("This record_id already has different data")
+                return block, True
+        block = create_new_block(blocks[-1], submission)
+        block_table, _ = table_names(ledger_id)
+        connection.execute(sql.SQL("INSERT INTO {} (position, record_id, record) VALUES (%s, %s, %s)")
+                           .format(sql.Identifier(block_table)), (block["index"], block["record_id"], Jsonb(block)))
+        connection.execute('UPDATE ledger_registry SET head_index=%s,head_hash=%s WHERE id=%s',
+                           (block['index'], block['hash'], ledger_id))
+        return block, False

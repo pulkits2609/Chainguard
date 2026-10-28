@@ -7,6 +7,13 @@ from ledger import canonical_json
 
 
 class TemplateValidationTests(unittest.TestCase):
+    def test_database_isolation_is_enforced_before_connecting(self):
+        from settings import require_chainguard_database
+        from accounts import Accounts
+        for factory in (Store, Accounts, require_chainguard_database):
+            for database in ('blockchain_ledger', 'postgres', 'unrelated'):
+                with self.assertRaises(ValueError):
+                    factory('postgresql://unused:unused@127.0.0.1:1/'+database)
     def test_timestamp_and_identifier_validation(self):
         for value in ('not-a-date', '2026-10-28', '2026-10-28T10:00:00', '2026-99-28T10:00:00Z'):
             with self.assertRaises(ValueError):

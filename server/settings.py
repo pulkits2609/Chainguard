@@ -4,6 +4,13 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+from psycopg.conninfo import conninfo_to_dict
+
+
+def require_chainguard_database(database_url):
+    """Fail before opening a connection to an original or unrelated database."""
+    if conninfo_to_dict(database_url).get('dbname') not in ('chainguard', 'chainguard_test'):
+        raise ValueError('Only the separate chainguard and chainguard_test databases are permitted')
 
 
 def load_environment(path):

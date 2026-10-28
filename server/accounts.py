@@ -9,6 +9,7 @@ import uuid
 
 import psycopg
 from psycopg.rows import dict_row
+from settings import require_chainguard_database
 
 
 SESSION_SECONDS = 12 * 60 * 60
@@ -42,6 +43,7 @@ def password_matches(password, stored):
 
 class Accounts:
     def __init__(self, database_url):
+        require_chainguard_database(database_url)
         self.database_url = database_url
         # Unknown users still perform one password calculation during login.
         self.dummy_password = password_hash(secrets.token_urlsafe(24))
