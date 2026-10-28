@@ -27,7 +27,7 @@ Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus t
 | 8 | Security audit | PASSED | Dedicated sanitized telemetry, administrator filters/pagination, retention, configuration and grant/checkpoint audit atomicity. All six independent review findings fixed; final review APPROVE. |
 | 9 | React management and customer UI | PASSED | Complete React dashboard/customer flow; 13 frontend tests and production build. Actual Edge UI smoke, browser/offline crypto, polling, revocation and narrow-layout inspection documented. |
 | 10 | Deployment and documentation | IMPLEMENTED; UBUNTU RUNTIME UNVERIFIED | Windows startup/schema/key initialization passed. Ubuntu shell syntax passed; systemd retains unprivileged restrictions with writable protected state directory. No Ubuntu host supplied for actual platform runtime validation. |
-| 11 | End-to-end security testing | PENDING | Genuine external producer and database access must be verified. |
+| 11 | End-to-end security testing | PASSED; PLATFORM GAP RECORDED | 90 backend + 8 launcher + 13 frontend tests passed, no skips/failures; production build passed. Genuine AudioShare session/lobby REST/webhook/checkpoint/offline acceptance passed twice. No remote push or original database changes. |
 
 ## Execution notes
 
@@ -89,4 +89,10 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Status: IMPLEMENTED; UBUNTU RUNTIME UNVERIFIED
 - Evidence: Windows startup/schema/key initialization passed. Ubuntu shell syntax passed; systemd retains unprivileged restrictions with writable protected state directory. No Ubuntu host supplied for actual platform runtime validation.
 - Files in checkpoint: README.md, .env.example, deploy/blockchain-ledger.service, tools/start_ledger.py, docs/LEGACY_LEDGER_README.md
+- API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
+
+### Phase 11 checkpoint
+- Status: PASSED; PLATFORM GAP RECORDED
+- Evidence: 90 backend + 8 launcher + 13 frontend tests passed, no skips/failures; production build passed. Genuine AudioShare session/lobby REST/webhook/checkpoint/offline acceptance passed twice. No remote push or original database changes.
+- Files in checkpoint: tools/test_external_integration.py, docs/EXTERNAL_INTEGRATION_EVIDENCE.md
 - API contracts: see README and docs/CHAINGUARD_BLUEPRINT.md; existing block and snapshot formats preserved.
