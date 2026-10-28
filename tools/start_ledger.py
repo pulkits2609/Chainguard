@@ -62,8 +62,10 @@ def create_configuration(root=ROOT):
         raise ValueError("Created .env. Edit its PostgreSQL/TLS values, then run this launcher again")
     host = ask("PostgreSQL host", "127.0.0.1")
     database_port = ask("PostgreSQL port", "5432")
-    database = ask("Database name", "blockchain_ledger")
-    user = ask("Database user", "ledger_app")
+    database = ask("Database name", "chainguard")
+    if database != 'chainguard':
+        raise ValueError('ChainGuard requires the separate chainguard database')
+    user = ask("Database user", "chainguard_app")
     password = getpass.getpass("Database password (hidden): ")
     if not database_port.isdecimal() or not 1 <= int(database_port) <= 65535:
         raise ValueError("Invalid PostgreSQL port")
@@ -96,6 +98,7 @@ def create_configuration(root=ROOT):
               "LEDGER_PORT": port, "LEDGER_ALLOWED_HOSTS": urlsplit(origin).hostname,
               "LEDGER_PUBLIC_ORIGIN": origin.rstrip("/"), "LEDGER_DEV_MODE": "false" if https else "true",
               "LEDGER_SECURE_COOKIES": "true" if https else "false"}
+    values['LEDGER_TEST_DATABASE_URL'] = url.rsplit('/', 1)[0] + '/chainguard_test'
     if https:
         values.update(LEDGER_TLS_CERT=cert, LEDGER_TLS_KEY=key)
     if any("\n" in value or "\r" in value for value in values.values()):

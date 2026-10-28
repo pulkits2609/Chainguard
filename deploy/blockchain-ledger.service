@@ -1,5 +1,5 @@
 [Unit]
-Description=Blockchain Ledger website and API
+Description=ChainGuard secure audit website and API
 After=network.target postgresql.service
 Wants=postgresql.service
 
@@ -8,9 +8,13 @@ Type=simple
 # Create this unprivileged service account and adjust paths before installing.
 User=ledger
 Group=ledger
-WorkingDirectory=/opt/blockchainLedger
+WorkingDirectory=/opt/Chainguard
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/blockchainLedger/.venv/bin/python server/app.py --env-file /opt/blockchainLedger/.env
+Environment=LEDGER_SIGNING_KEY_PATH=/var/lib/chainguard/checkpoint.key
+Environment=LEDGER_INTEGRATION_KEY_PATH=/var/lib/chainguard/integration.key
+StateDirectory=chainguard
+StateDirectoryMode=0700
+ExecStart=/opt/Chainguard/.venv/bin/python server/app.py --env-file /opt/Chainguard/.env
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
