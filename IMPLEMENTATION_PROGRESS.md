@@ -1,5 +1,7 @@
 # ChainGuard implementation progress
 
+Latest follow-up: the October 29 source-audit remediation is tracked in `AUDIT_REMEDIATION.md` on `codex/security-audit-hardening`. Its local verification passed 104 backend, 14 tools and 13 frontend tests plus the production build. The original phase record below describes the initial delivery; it is not the latest hosted-CI result.
+
 Branch: `feature/chainguard`. Scope: the supplied ChainGuard v1 blueprint plus the user's final decisions.
 
 ## Safety and delivery boundaries

@@ -16,6 +16,19 @@
 
 See [implementation progress](IMPLEMENTATION_PROGRESS.md), [frozen blueprint](docs/CHAINGUARD_BLUEPRINT.md), and [genuine external integration evidence](docs/EXTERNAL_INTEGRATION_EVIDENCE.md). The pre-ChainGuard README is retained in `docs/LEGACY_LEDGER_README.md` for historical reference.
 
+## October security-audit hardening
+
+- [GitHub Actions CI](docs/CI.md) provisions isolated PostgreSQL databases and runs the backend, launcher, adapter and frontend checks, production build, plus an Ubuntu application startup/restart smoke. A workflow definition alone is not a passing hosted run.
+- Expensive ledger requests and all customer capability attempts receive source limits **before database lookup**. A separate four-worker verification budget leaves inexpensive account/session routes responsive. PostgreSQL statements default to a 5-second timeout and lock waits to 2 seconds. See `.env.example` for tuning.
+- Customer pages use a shipment expression index and bounded pagination. A 64-entry server verification cache expires after 30 seconds and invalidates when ordinary SQL inserts/updates/deletes/truncates change the ledger revision. It retains no full ledger payload. Cache hits retain the original `checked_at_ms`; authorization, expiry and revocation are checked on every request.
+- Each customer refresh hashes the chain once and compares at most the latest 20 checkpoints. Responses and the UI disclose when older checkpoint evidence was not compared. Retain independently trusted evidence to verify other historical checkpoints. A privileged database attacker can disable or rewrite revision metadata; periodic expiry is still required, and cached server checks are not independent proof.
+- [New template ledgers require managed credentials](docs/MANAGED_CREDENTIALS.md), omit legacy write secrets and reject legacy token rotation/append. Existing ledgers retain their previous credential compatibility; custom generic ledgers still support the legacy path.
+- [Application-side event forwarding](docs/AUTOMATIC_INTEGRATION.md) now records real AudioShare session operations automatically. It is explicitly middleware integration, not provider-native webhook support or a logistics feed. Finite in-memory retries do not provide a durable outbox guarantee.
+
+Read gates are intentionally process-local for this single-process deployment: default 60 ledger requests and 30 customer attempts per peer IP per minute, with bounded source bookkeeping. They complement the existing persistent integration and per-grant limits. Only the first denied source request per window is audited, so repeated denied guesses do not create unbounded telemetry writes. Behind NAT, clients share their source allowance; this MVP does not infer proxy trust.
+
+Full history reads are streamed into a default 32 MiB/100,000-block interactive budget (byte cap configurable up to 64 MiB). Genesis/append preflight checks reject a write before it would make the ledger unreadable under that budget. Configure budgets before commissioning a ledger; reducing a budget below existing history can intentionally make interactive operations unavailable. Partition operational ledgers accordingly. Full-chain append verification remains enabled and writes remain O(N); [measured 1,000/10,000-block results](docs/PERFORMANCE_MEASUREMENTS.md) describe that limitation rather than claiming enterprise throughput.
+
 ## Architecture and compatibility
 
 One deployable Python application serves the frontend and same-origin API, backed by one PostgreSQL service. Focused modules handle integrations, policies, audit, checkpoints and shipment capabilities. Existing registry/accounts and per-ledger block/key tables are reused; business records are not duplicated.
@@ -81,7 +94,7 @@ Idempotency-Key: STABLE_SOURCE_EVENT_ID
 {"event_type":"SOURCE_OPERATION","source_system":"YOUR_APPLICATION","event_time":"RFC3339_TIMESTAMP","resource_id":"SOURCE_RESOURCE_ID"}
 ```
 
-This contract example fits the Generic Security Events template; other templates have their own fields shown in the UI and `GET /api/ledger-templates`. It is documentation, not a recorded logistics event. HTTP201 creates a block; a matching retry returns200 with `duplicate=true`; a conflicting retry returns409. Integration identities namespace stored event IDs. Legacy ledger tokens remain independent append-only credentials; connector policy applies to connector credentials, and global body/source controls cover legacy writes too.
+This contract example fits the Generic Security Events template; other templates have their own fields shown in the UI and `GET /api/ledger-templates`. It is documentation, not a recorded logistics event. HTTP201 creates a block; a matching retry returns200 with `duplicate=true`; a conflicting retry returns409. Integration identities namespace stored event IDs. Legacy ledger tokens remain independent append-only credentials only for compatible existing/custom generic ledgers. Newly created templates require managed credentials so their writes cannot bypass connector policies.
 
 Webhook endpoint: `POST /api/integrations/INTEGRATION_UUID/webhook`. Configuration includes `ledger_id`, `name`, `auth_method` (`bearer`/`hmac`), `enabled`, `credential_scopes`, `field_mapping` (target→dotted source path), `event_id_field`, `timestamp_field`, `signature_header`, and `policy`. Mapping never runs arbitrary scripts.
 

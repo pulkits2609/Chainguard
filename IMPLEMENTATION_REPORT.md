@@ -1,5 +1,7 @@
 # ChainGuard delivery report
 
+This report records the initial delivery. See `AUDIT_REMEDIATION.md` for the subsequent October 29 security hardening, current 104/14/13 local test counts, measured performance, automatic adapter evidence and hosted-CI verification boundary.
+
 Date: 29 October 2026, Asia/Calcutta. Branch: `feature/chainguard`.
 
 ## Result
