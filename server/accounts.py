@@ -9,7 +9,7 @@ import uuid
 
 import psycopg
 from psycopg.rows import dict_row
-from settings import require_chainguard_database
+from settings import database_options, require_chainguard_database
 
 
 SESSION_SECONDS = 12 * 60 * 60
@@ -57,7 +57,7 @@ class Accounts:
                 csrf_token TEXT NOT NULL, expires_at BIGINT NOT NULL)""")
 
     def connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
+        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5, options=database_options())
 
     @staticmethod
     def public_user(row):

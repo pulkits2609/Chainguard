@@ -20,9 +20,14 @@ class ChainGuardHttpTests(unittest.TestCase):
     request = legacy_tests.WebTests.request
     register = legacy_tests.WebTests.register
 
-    def ledger(self, cookie, csrf, template='shipment_events'):
-        status, result, _ = self.request('POST','/api/ledgers',
-            {'name':'Private test ledger','description':'Automated test fixtures','template_id':template}, cookie,csrf)
+    def ledger(self, cookie, csrf, template='shipment_events', legacy=False):
+        value={'name':'Private test ledger','description':'Automated test fixtures'}
+        if legacy:
+            from ledger_templates import template_fields
+            value.update(fields=template_fields(template),visibility='private')
+        else:
+            value['template_id']=template
+        status, result, _ = self.request('POST','/api/ledgers',value,cookie,csrf)
         self.assertEqual(status,201,result)
         self.ledgers.append(result['ledger']['id'])
         return result
@@ -50,7 +55,7 @@ class ChainGuardHttpTests(unittest.TestCase):
 
     def test_global_body_cap_covers_legacy_tokens_and_integrity_metrics(self):
         user,cookie,csrf = self.register()
-        created = self.ledger(cookie,csrf,template='security_events')
+        created = self.ledger(cookie,csrf,template='security_events',legacy=True)
         identifier=created['ledger']['id']; path='/api/ledgers/'+identifier
         self.server.integrations.max_body_bytes=128
         event={'event_type':'TEST','source_system':'TEST','event_time':'2026-10-29T00:00:00Z','details':{'padding':'x'*256}}
@@ -80,7 +85,7 @@ class ChainGuardHttpTests(unittest.TestCase):
     def test_verify_credentials_respect_body_caps_and_legacy_cg_prefix(self):
         from store import token_hash
         _,cookie,csrf=self.register()
-        created=self.ledger(cookie,csrf); identifier=created['ledger']['id']; path='/api/ledgers/'+identifier
+        created=self.ledger(cookie,csrf,legacy=True); identifier=created['ledger']['id']; path='/api/ledgers/'+identifier
         config={'ledger_id':identifier,'name':'Verify only','auth_method':'bearer',
                 'credential_scopes':['verify'],'policy':{'allowed_operations':['verify'],'max_body_bytes':1}}
         status,result,_=self.request('POST','/api/integrations',config,cookie,csrf)

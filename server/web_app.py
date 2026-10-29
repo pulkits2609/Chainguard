@@ -27,6 +27,7 @@ from ledger_templates import templates
 from chainguard_routes import initialize_services, route as chainguard_route
 from integrations import IntegrationError, is_integration_token
 from shipment_access import ShipmentRateLimit
+from request_limits import ReadBudget, ResourceLimitError
 
 
 class HttpError(Exception):
@@ -75,6 +76,10 @@ class WebServer(ThreadingHTTPServer):
             self.allowed_hosts.add(urlsplit(self.origin).hostname)
         self.login_limits = LoginLimits()
         self.workers = threading.BoundedSemaphore(32)
+        self.read_budget = ReadBudget(
+            reads_per_minute=int(os.environ.get('LEDGER_PUBLIC_READS_PER_MINUTE', '60')),
+            customer_attempts_per_minute=int(os.environ.get('LEDGER_CUSTOMER_ATTEMPTS_PER_MINUTE', '30')),
+            concurrent_work=int(os.environ.get('LEDGER_CONCURRENT_VERIFICATIONS', '4')))
         initialize_services(self, key_directory)
         super().__init__(address, WebHandler)
 
@@ -240,6 +245,19 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = parsed.path
         method = self.command
+        parts = path.strip('/').split('/')
+        group = None
+        if len(parts) >= 3 and parts[:3] == ['api', 'customer', 'shipments']:
+            group = 'customer'
+        elif (parts in (['api', 'overview'], ['api', 'ledgers'], ['api', 'my-ledgers']) and method == 'GET') or (
+                len(parts) >= 3 and parts[:2] == ['api', 'ledgers'] and (
+                    method == 'GET' or (method == 'POST' and len(parts) >= 4 and parts[3] in (
+                        'verify', 'validate-snapshot', 'verify-checkpoint', 'signed-checkpoints')))):
+            group = 'ledger'
+        if group:
+            self.server.read_budget.check(self.client_address[0], group)
+            self.server.read_budget.acquire()
+            self._read_slot = True
         if chainguard_route(self, parsed):
             return
         if method == "GET" and path == "/api/ledger-templates":
@@ -396,8 +414,26 @@ class WebHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def handle_request(self):
+        self._read_slot = False
         try:
             self.route()
+        except ResourceLimitError as error:
+            # Only the first source-limit violation per window touches telemetry.
+            # Repeated denied guesses stay cheap and never reach credential/database lookup.
+            if error.record_audit:
+                try:
+                    self.server.audit.record('rate_limit', 'read', 'rejected', 'source_read_limit',
+                                             severity='warning', source_ip=self.client_address[0])
+                except (psycopg.Error, OSError):
+                    pass
+            body = json.dumps({'error': str(error)}).encode('utf-8')
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Retry-After', str(error.retry_after))
+            self.security_headers()
+            self.end_headers()
+            self.wfile.write(body)
         except HttpError as error:
             self.send_json(error.status, {"error": error.message})
         except IntegrationError as error:
@@ -446,6 +482,8 @@ class WebHandler(BaseHTTPRequestHandler):
             # Never send a DSN, database exception or secret back to the browser.
             self.send_json(503, {"error": "Storage is unavailable; inspect the local service logs"})
         finally:
+            if self._read_slot:
+                self.server.read_budget.release()
             self.close_connection = True
 
     do_GET = handle_request

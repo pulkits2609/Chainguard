@@ -2,6 +2,8 @@
 
 import hashlib
 import hmac
+import json
+import os
 import secrets
 import time
 import uuid
@@ -14,12 +16,19 @@ from psycopg.types.json import Jsonb
 
 from field_schema import validate_data, validate_fields, reject_nul
 from ledger_templates import template_fields, validate_template_event
-from settings import require_chainguard_database
+from settings import database_options, require_chainguard_database
 from ledger import (LedgerConflict, MAX_BODY_BYTES, calculate_hash, canonical_json,
                     create_genesis_block, create_new_block, validate_submission, verify_chain)
 
 
 LEDGER_STATES = {"active", "read_only", "archived"}
+
+
+def history_byte_budget():
+    maximum = int(os.environ.get('LEDGER_MAX_HISTORY_BYTES', str(32 * 1024 * 1024)))
+    if not 1024 <= maximum <= 64 * 1024 * 1024:
+        raise ValueError('Interactive history budget must be 1 KiB–64 MiB')
+    return maximum
 
 
 class StoreNotFound(ValueError):
@@ -114,17 +123,35 @@ class Store:
             connection.execute("CREATE INDEX IF NOT EXISTS ledger_owner_index ON ledger_registry (owner_id)")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'private'))")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS template_id TEXT")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS managed_writes_required BOOLEAN NOT NULL DEFAULT FALSE")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS head_index BIGINT")
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS head_hash TEXT")
+            connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS history_revision BIGINT NOT NULL DEFAULT 0")
+            connection.execute("""CREATE OR REPLACE FUNCTION chainguard_history_changed() RETURNS trigger
+                LANGUAGE plpgsql AS $$ BEGIN
+                    UPDATE ledger_registry SET history_revision=history_revision+1 WHERE id=TG_ARGV[0];
+                    RETURN NULL;
+                END $$""")
             # Initialize metadata only for verifiable legacy histories. Never rewrite blocks.
             for row in connection.execute('SELECT * FROM ledger_registry WHERE head_index IS NULL FOR UPDATE').fetchall():
                 blocks = self._blocks(connection, row['id'])
                 if verify_ledger(blocks, row)['valid']:
                     connection.execute('UPDATE ledger_registry SET head_index=%s,head_hash=%s WHERE id=%s',
                                        (blocks[-1]['index'], blocks[-1]['hash'], row['id']))
+            for row in connection.execute('SELECT id FROM ledger_registry ORDER BY id').fetchall():
+                self._install_history_index(connection, row['id'])
 
     def connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
+        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5, options=database_options())
+
+    def _install_history_index(self, connection, ledger_id):
+        blocks, _ = table_names(ledger_id)
+        connection.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} ((record->'data'->>'shipment_id'), position) WHERE position > 0")
+                           .format(sql.Identifier(blocks + '_shipment'), sql.Identifier(blocks)))
+        installed = connection.execute("SELECT 1 FROM pg_trigger WHERE tgrelid=%s::regclass AND tgname='cg_history_revision'", (blocks,)).fetchone()
+        if not installed:
+            connection.execute(sql.SQL("CREATE TRIGGER cg_history_revision AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON {} FOR EACH STATEMENT EXECUTE FUNCTION chainguard_history_changed({})")
+                               .format(sql.Identifier(blocks), sql.Literal(ledger_id)))
 
     def _metadata(self, connection, ledger_id, lock=False):
         table_names(ledger_id)
@@ -138,7 +165,7 @@ class Store:
     def _public(self, connection, row):
         blocks, _ = table_names(row["id"])
         count = connection.execute(sql.SQL("SELECT COUNT(*) AS count FROM {}").format(sql.Identifier(blocks))).fetchone()["count"]
-        return {key: row[key] for key in ("id", "owner_id", "name", "description", "state", "fields", "created_at", "visibility", "template_id")} | {"block_count": count}
+        return {key: row[key] for key in ("id", "owner_id", "name", "description", "state", "fields", "created_at", "visibility", "template_id", "managed_writes_required")} | {"block_count": count}
 
     def create_ledger(self, owner_id, name, description, fields=None, template_id=None, visibility=None):
         owner_id = validate_label(owner_id, "Owner ID", 128)
@@ -155,13 +182,17 @@ class Store:
             raise ValueError("Visibility must be public or private")
         ledger_id = str(uuid.uuid4())
         blocks, secret_table = table_names(ledger_id)
-        write_token = secrets.token_urlsafe(32)
+        managed_writes_required = template_id is not None
+        write_token = None if managed_writes_required else secrets.token_urlsafe(32)
         genesis = ledger_genesis(ledger_id, fields)
+        if len(json.dumps(genesis, ensure_ascii=True).encode('utf-8')) > history_byte_budget():
+            raise OverflowError('Genesis exceeds the configured interactive history budget')
         with self.connect() as connection:
             connection.execute("""INSERT INTO ledger_registry
-                (id, owner_id, name, description, state, fields, created_at, token_hash, visibility, template_id)
-                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s)""",
-                (ledger_id, owner_id, name, description, Jsonb(fields), time.time_ns() // 1000000, token_hash(write_token), visibility, template_id))
+                (id, owner_id, name, description, state, fields, created_at, token_hash, visibility, template_id, managed_writes_required)
+                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, %s)""",
+                (ledger_id, owner_id, name, description, Jsonb(fields), time.time_ns() // 1000000,
+                 '' if managed_writes_required else token_hash(write_token), visibility, template_id, managed_writes_required))
             connection.execute(sql.SQL("""CREATE TABLE {} (
                 position BIGINT PRIMARY KEY CHECK (position >= 0),
                 record_id TEXT UNIQUE NOT NULL,
@@ -176,8 +207,14 @@ class Store:
             connection.execute(sql.SQL("INSERT INTO {} (snapshot_key) VALUES (%s)").format(sql.Identifier(secret_table)),
                                (Fernet.generate_key().decode("ascii"),))
             connection.execute('UPDATE ledger_registry SET head_index=0,head_hash=%s WHERE id=%s', (genesis['hash'], ledger_id))
+            self._install_history_index(connection, ledger_id)
             metadata = self._public(connection, self._metadata(connection, ledger_id))
-        return {"ledger": metadata, "write_token": write_token, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
+        result = {"ledger": metadata, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
+        if managed_writes_required:
+            result['integration_hint'] = 'Create a managed integration to submit events under its configured policy.'
+        else:
+            result['write_token'] = write_token
+        return result
 
     def list_ledgers(self, owner_id=None, admin=False, public_only=False):
         with self.connect() as connection:
@@ -200,6 +237,11 @@ class Store:
         metadata = self.get_ledger(ledger_id)
         if metadata["owner_id"] != user_id:
             raise StoreForbidden("Only the ledger creator can access its integration details")
+        if metadata['managed_writes_required']:
+            return {"ledger_id": ledger_id, "managed_writes_required": True,
+                    "write_path": "/api/ledgers/" + ledger_id + "/blocks",
+                    "integration_path": "/api/integrations",
+                    "token_hint": "Create a managed integration. This ledger has no legacy write token; its writes require integration policy enforcement."}
         return {"ledger_id": ledger_id, "write_path": "/api/ledgers/" + ledger_id + "/blocks",
                 "token_hint": "The secret is shown once at creation or rotation. Rotate it if lost."}
 
@@ -209,6 +251,8 @@ class Store:
             row = self._metadata(connection, ledger_id, lock=True)
             if row["owner_id"] != user_id:
                 raise StoreForbidden("Only the ledger creator can rotate its write token")
+            if row['managed_writes_required']:
+                raise StoreForbidden('This ledger requires a managed integration; legacy write-token rotation is disabled')
             connection.execute("UPDATE ledger_registry SET token_hash = %s WHERE id = %s",
                                (token_hash(write_token), ledger_id))
         return {"ledger_id": ledger_id, "write_token": write_token, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
@@ -239,10 +283,31 @@ class Store:
                 connection.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
             connection.execute("DELETE FROM ledger_registry WHERE id = %s", (ledger_id,))
 
-    def _blocks(self, connection, ledger_id):
+    def _blocks(self, connection, ledger_id, with_budget=False):
         blocks, _ = table_names(ledger_id)
-        rows = connection.execute(sql.SQL("SELECT record FROM {} ORDER BY position").format(sql.Identifier(blocks))).fetchall()
-        return [row["record"] for row in rows]
+        maximum_bytes = history_byte_budget()
+        result, size = [], 0
+        # A server-side cursor avoids buffering an unbounded complete result before checking its budget.
+        with connection.cursor(name='cg_history_' + uuid.uuid4().hex) as cursor:
+            cursor.execute(sql.SQL('SELECT record FROM {} ORDER BY position LIMIT 100001').format(sql.Identifier(blocks)))
+            for row in cursor:
+                size += len(json.dumps(row['record'], ensure_ascii=True).encode('utf-8'))
+                if size > maximum_bytes or len(result) >= 100000:
+                    raise OverflowError('History exceeds the interactive verification budget; partition operational ledgers')
+                result.append(row['record'])
+        return (result, size, maximum_bytes) if with_budget else result
+
+    def shipment_records(self, connection, ledger_id, shipment_id, limit, offset):
+        blocks, _ = table_names(ledger_id)
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 100000:
+            raise ValueError('Shipment pagination is out of range')
+        table = sql.Identifier(blocks)
+        summary = connection.execute(sql.SQL("""SELECT COUNT(*) AS total,
+            MAX(CASE WHEN jsonb_typeof(record->'timestamp_ms')='number' AND record->>'timestamp_ms' ~ '^[0-9]{{1,16}}$'
+                THEN (record->>'timestamp_ms')::bigint END) AS last_recorded_at_ms,
+            MAX(position) AS last_index FROM {} WHERE position>0 AND record->'data'->>'shipment_id'=%s""").format(table), (shipment_id,)).fetchone()
+        rows = connection.execute(sql.SQL("SELECT record FROM {} WHERE position>0 AND record->'data'->>'shipment_id'=%s ORDER BY position LIMIT %s OFFSET %s").format(table), (shipment_id, limit, offset)).fetchall()
+        return [row['record'] for row in rows], summary
 
     def read(self, ledger_id):
         with self.connect() as connection:
@@ -267,6 +332,8 @@ class Store:
             raise ValueError("Submission is too large")
         with self.connect() as connection:
             row = self._metadata(connection, ledger_id, lock=True)
+            if row['managed_writes_required']:
+                raise StoreForbidden('This ledger requires a managed integration credential')
             if not isinstance(token, str) or not 20 <= len(token) <= 256 or not hmac.compare_digest(token_hash(token), row["token_hash"]):
                 raise StoreForbidden("Invalid ledger write token")
             return self.append_authorized(ledger_id, submission, record_id, connection)
@@ -286,7 +353,7 @@ class Store:
             raise LedgerConflict("This ledger does not accept new blocks in its current state")
         submission = prepare_submission(submission, row["fields"], record_id)
         validate_template_event(submission['data'], row.get('template_id'))
-        blocks = self._blocks(connection, ledger_id)
+        blocks, history_bytes, maximum_bytes = self._blocks(connection, ledger_id, with_budget=True)
         if not verify_ledger(blocks, row)["valid"]:
             raise LedgerConflict("Ledger verification failed; no data was changed")
         for block in blocks:
@@ -295,6 +362,8 @@ class Store:
                     raise LedgerConflict("This record_id already has different data")
                 return block, True
         block = create_new_block(blocks[-1], submission)
+        if len(blocks) >= 100000 or history_bytes + len(json.dumps(block, ensure_ascii=True).encode('utf-8')) > maximum_bytes:
+            raise OverflowError('Append would exceed the interactive history budget; use a new operational ledger')
         block_table, _ = table_names(ledger_id)
         connection.execute(sql.SQL("INSERT INTO {} (position, record_id, record) VALUES (%s, %s, %s)")
                            .format(sql.Identifier(block_table)), (block["index"], block["record_id"], Jsonb(block)))

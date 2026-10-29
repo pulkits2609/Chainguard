@@ -13,6 +13,18 @@ def require_chainguard_database(database_url):
         raise ValueError('Only the separate chainguard and chainguard_test databases are permitted')
 
 
+def database_options():
+    """Bound SQL execution and lock waits; validated integers cannot inject options."""
+    try:
+        statement = int(os.environ.get('LEDGER_DB_STATEMENT_TIMEOUT_MS', '5000'))
+        lock = int(os.environ.get('LEDGER_DB_LOCK_TIMEOUT_MS', '2000'))
+    except ValueError:
+        raise ValueError('Database timeouts must be integer milliseconds') from None
+    if not 10 <= lock <= statement <= 60000:
+        raise ValueError('Database timeouts require 10 <= lock <= statement <= 60000 milliseconds')
+    return '-c statement_timeout=' + str(statement) + ' -c lock_timeout=' + str(lock)
+
+
 def load_environment(path):
     if not path:
         return

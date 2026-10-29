@@ -43,7 +43,9 @@ class TemplateStoreTests(unittest.TestCase):
             self.assertEqual(ledger['visibility'],'private')
             self.assertEqual(self.store.read(ledger['id'])['blocks'][0], ledger_genesis(ledger['id'],template['fields']))
             data = {field['name']: values[field['name']] for field in template['fields'] if field['required']}
-            self.store.append(ledger['id'],result['write_token'],data,'event-1')
+            # This fixture exercises template validation through the shared internal
+            # engine. Managed credential authorization is tested separately.
+            self.store.append_authorized(ledger['id'],data,'event-1')
             self.assertTrue(self.store.read(ledger['id'])['verification']['valid'])
             self.assertNotIn(ledger['id'],[row['id'] for row in self.store.list_ledgers(public_only=True)])
             original = canonical_json(self.store.read(ledger['id'])['blocks'])

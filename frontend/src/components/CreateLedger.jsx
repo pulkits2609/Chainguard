@@ -53,7 +53,7 @@ export default function CreateLedger({ onCreated, onCancel }) {
       <label>Description<textarea maxLength={500} value={description} onChange={event => setDescription(event.target.value)}/></label>
       <h3>Block data structure</h3><p className="muted">Each new record must follow these fields. Use integer units for fractional amounts; floating-point values are not supported. Objects and arrays contain JSON values.</p>
       <label>Visibility<select value={visibility} onChange={event => setVisibility(event.target.value)}><option value="private">Private · owner and administrator only</option>{!templateId && <option value="public">Public · anyone can read and export</option>}</select></label>
-      {templateId && <p className="muted">Logistics templates start private. You can change visibility later through ledger management. Template fields are fixed.</p>}
+      {templateId && <p className="muted">Templates start private and require managed integration credentials for writes. Create the credential in Integrations after creating this ledger. You can change visibility later through ledger management. Template fields are fixed.</p>}
       <fieldset disabled={Boolean(templateId) || busy} className="schema-fields"><legend>Fields</legend>{fields.map((field, index) => <div className="schema-field" key={index}>
         <label>Field name<input required pattern="[A-Za-z_][A-Za-z0-9_]*" maxLength={64} value={field.name} onChange={event => change(index, 'name', event.target.value)}/></label>
         <label>Type<select value={field.type} onChange={event => change(index, 'type', event.target.value)}>{FieldTypes.map(type => <option key={type}>{type}</option>)}</select></label>

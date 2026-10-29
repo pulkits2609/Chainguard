@@ -3,6 +3,10 @@
 import datetime
 import hashlib
 import hmac
+import copy
+import json
+from collections import OrderedDict
+import threading
 import re
 import secrets
 import time
@@ -74,6 +78,11 @@ class ShipmentAccessService:
         self.store, self.checkpoints = store, checkpoints
         self.audit = audit
         self.default_lifetime, self.maximum_lifetime = default_lifetime_seconds, maximum_lifetime_seconds
+        self.verification_clock = time.monotonic
+        self.verification_ttl = 30
+        self.checkpoint_limit = 20
+        self._verification_cache = OrderedDict()
+        self._verification_lock = threading.Lock()
         with store.connect() as connection:
             connection.execute("""CREATE TABLE IF NOT EXISTS shipment_access_grants (
                 grant_id TEXT PRIMARY KEY, ledger_id TEXT NOT NULL REFERENCES ledger_registry(id) ON DELETE CASCADE,
@@ -151,32 +160,56 @@ class ShipmentAccessService:
 
     def _view(self, connection, grant):
         metadata = self.store._metadata(connection, grant["ledger_id"])
-        blocks = self.store._blocks(connection, grant["ledger_id"])
+        # Bounded evidence lookup also fingerprints key/checkpoint mutations on cache hits.
+        rows = connection.execute("""SELECT c.checkpoint,k.public_key FROM signed_checkpoints c
+            LEFT JOIN verification_keys k ON k.key_id=c.checkpoint->>'key_id'
+            WHERE c.ledger_id=%s ORDER BY c.created_at_ms DESC,c.checkpoint_id DESC LIMIT %s""",
+            (grant['ledger_id'], self.checkpoint_limit + 1)).fetchall()
+        stamp = hashlib.sha256(json.dumps([metadata['history_revision'], metadata['head_index'],
+            metadata['head_hash'], metadata['fields'], rows], sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+        with self._verification_lock:
+            now = self.verification_clock()
+            cached = self._verification_cache.get(grant['ledger_id'])
+            if cached and cached[0] == stamp and 0 <= now - cached[1] < self.verification_ttl:
+                self._verification_cache.move_to_end(grant['ledger_id'])
+                verification, checkpoint, key = copy.deepcopy(cached[2])
+                verification['age_ms'] = int((now - cached[1]) * 1000)
+                return verification, checkpoint, key
+            result = self._verify_view(connection, metadata, rows)
+            self._verification_cache[grant['ledger_id']] = (stamp, self.verification_clock(), copy.deepcopy(result))
+            self._verification_cache.move_to_end(grant['ledger_id'])
+            while len(self._verification_cache) > 64:
+                self._verification_cache.popitem(last=False)
+            return result
+
+    def _verify_view(self, connection, metadata, rows):
+        blocks = self.store._blocks(connection, metadata['id'])
         internal_valid = verify_ledger(blocks, metadata)["valid"]
-        selected = [block for block in blocks if isinstance(block, dict) and isinstance(block.get("data"), dict)
-                    and block["data"].get("shipment_id") == grant["shipment_id"]]
-        # Only checkpoint metadata is read here; no private block content leaves this service.
-        rows = connection.execute("SELECT checkpoint FROM signed_checkpoints WHERE ledger_id=%s ORDER BY created_at_ms DESC,checkpoint_id DESC", (grant["ledger_id"],)).fetchall()
+        truncated = len(rows) > self.checkpoint_limit
+        rows = rows[:self.checkpoint_limit]
         checkpoint = rows[0]["checkpoint"] if rows else None
         checkpoint_valid = True
         signature_valid = False
         key = None
         for row in rows:
             saved = row["checkpoint"]
-            key_row = connection.execute("SELECT public_key FROM verification_keys WHERE key_id=%s", (saved.get("key_id") if isinstance(saved, dict) else None,)).fetchone()
-            verification = verify_checkpoint(saved, key_row["public_key"] if key_row else None,
-                                             grant["ledger_id"], {"ledger": metadata, "blocks": blocks})
-            checkpoint_valid &= verification["valid"]
+            # Hash the history once, then check signatures and the corresponding anchored block.
+            verification = verify_checkpoint(saved, row['public_key'], metadata['id'])
+            matches = verification['valid'] and saved['index'] < len(blocks) and isinstance(blocks[saved['index']],dict) and blocks[saved['index']].get('hash') == saved['hash']
+            checkpoint_valid &= matches
             if saved is checkpoint:
-                key = key_row["public_key"] if key_row else None
+                key = row['public_key']
                 signature_valid = verification["signature_valid"]
         valid = internal_valid and checkpoint_valid
-        covered = bool(checkpoint and checkpoint_valid and all(type(block.get("index")) is int and block["index"] <= checkpoint["index"] for block in selected))
         verification = {"server_records_verified": valid, "checkpoint_signature_verified": signature_valid,
                         "independently_verified": False, "status": "server_verified" if valid else "verification_failed",
                         "checkpoint_status": "signature_verified" if signature_valid else "verification_failed" if checkpoint else "not_available",
-                        "history_status": "not_independently_verified", "checkpoint_covers_all_shipment_records": covered,
-                        "message": "Shipment records verified by the ChainGuard server. Redacted contents are not independently verified." if valid else "Verification failed; the server found a cryptographic or historical inconsistency."}
+                        "history_status": "not_independently_verified",
+                        "checked_at_ms": time.time_ns() // 1000000, 'age_ms': 0,
+                        'maximum_cache_age_seconds': self.verification_ttl,
+                        'checkpoint_comparisons': len(rows), 'checkpoint_comparison_limit': self.checkpoint_limit,
+                        'all_checkpoints_compared': not truncated,
+                        "message": "Server checked current history and the bounded latest checkpoint set; redacted contents are not independently verified." if valid else "Verification failed; the server found a cryptographic or historical inconsistency."}
         # A tampered metadata row must never turn this redacted endpoint into an
         # arbitrary JSON disclosure channel.
         try:
@@ -187,22 +220,28 @@ class ShipmentAccessService:
             trusted_key(key)
         except (ValueError, TypeError):
             key = None
-        return selected, checkpoint, key, verification
+        return verification, checkpoint, key
 
     def events(self, shipment_id, token, limit=50, offset=0):
         limit, offset = page_values(limit, offset)
         with self.store.connect() as connection:
             grant = self._authorize(connection, shipment_id, token)
-            selected, checkpoint, _, verification = self._view(connection, grant)
-            events = [project_event(block) for block in selected[offset:offset + limit]
+            verification, checkpoint, _ = self._view(connection, grant)
+            selected, summary = self.store.shipment_records(connection, grant['ledger_id'], shipment_id, limit, offset)
+            verification['checkpoint_covers_all_shipment_records'] = bool(checkpoint and verification['server_records_verified']
+                and (summary['last_index'] is None or summary['last_index'] <= checkpoint['index']))
+            events = [project_event(block) for block in selected
                       if type(block.get("index")) is int and type(block.get("timestamp_ms")) is int]
-        return {"shipment_id": shipment_id, "events": events, "total": len(selected), "limit": limit, "offset": offset,
-                "last_recorded_at_ms": max((block.get("timestamp_ms", 0) for block in selected if type(block.get("timestamp_ms")) is int), default=None),
+        return {"shipment_id": shipment_id, "events": events, "total": summary['total'], "limit": limit, "offset": offset,
+                "last_recorded_at_ms": int(summary['last_recorded_at_ms']) if summary['last_recorded_at_ms'] is not None and str(summary['last_recorded_at_ms']).isdigit() else None,
                 "verification": verification, "checkpoint": checkpoint}
 
     def proof(self, shipment_id, token):
         with self.store.connect() as connection:
             grant = self._authorize(connection, shipment_id, token)
-            _, checkpoint, key, verification = self._view(connection, grant)
+            verification, checkpoint, key = self._view(connection, grant)
+            _, summary = self.store.shipment_records(connection, grant['ledger_id'], shipment_id, 1, 0)
+            verification['checkpoint_covers_all_shipment_records'] = bool(checkpoint and verification['server_records_verified']
+                and (summary['last_index'] is None or summary['last_index'] <= checkpoint['index']))
         return {"shipment_id": shipment_id, "checkpoint": checkpoint, "verification_key": key,
                 "verification": verification, "limitations": LIMITATIONS}

@@ -31,21 +31,23 @@ function Integration({ ledger, initial, onClose }) {
   }
   const path = details?.write_path;
   const endpoint = path ? new URL(path, window.location.origin).href : '';
+  const managed = ledger.managed_writes_required === true || details?.managed_writes_required === true;
   return <section className="form-panel integration-panel">
     <div className="details-heading"><h2>Integration · {ledger.name}</h2><button onClick={onClose}>Close</button></div>
-    <p>Only you, the creator, can open these integration settings. Keep the bearer token private.</p>
+    <p>Only you, the creator, can open these integration settings. {managed ? 'This ledger requires managed integration credentials and their security policies.' : 'Keep the bearer token private.'}</p>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {endpoint && <label>Write endpoint<input readOnly value={endpoint}/></label>}
-    {details?.write_token ? <><p className="notice warning">Save this token now. It is shown only until you close this panel. It is not saved in browser storage.</p><label>Bearer token<textarea readOnly spellCheck="false" value={details.write_token}/></label></> : details && <p className="muted">The saved token cannot be retrieved. {details.token_hint && `Hint: ${details.token_hint}`} Rotate it if you have lost it.</p>}
+    {managed ? <p className="notice">Open Integrations to create a managed connector, configure its policy, or rotate its secret. This ledger does not issue a legacy write token.</p>
+      : details?.write_token ? <><p className="notice warning">Save this token now. It is shown only until you close this panel. It is not saved in browser storage.</p><label>Bearer token<textarea readOnly spellCheck="false" value={details.write_token}/></label></> : details && <p className="muted">The saved token cannot be retrieved. {details.token_hint && `Hint: ${details.token_hint}`} Rotate it if you have lost it.</p>}
     {endpoint && <details><summary>Request format</summary>
       <p>Send your ledger fields directly as JSON. The server generates a record ID; no extra wrapper is required.</p>
       <ul>{(ledger.fields || []).map(field => <li key={field.name}><code>{field.name}</code> · {field.type} · {field.required === false ? 'Optional — may be omitted' : 'Required'}</li>)}</ul>
       <p>Optional fields must have the correct type when included. Unknown fields are rejected.</p>
       <label className="check-label"><input type="checkbox" checked={includeOptional} onChange={event => setIncludeOptional(event.target.checked)}/>Include optional fields in example</label>
-      <pre>{`POST ${endpoint}\nAuthorization: Bearer YOUR_SECRET_TOKEN\nContent-Type: application/json\n\n${JSON.stringify(exampleData(ledger.fields, includeOptional), null, 2)}`}</pre>
+      <pre>{`POST ${endpoint}\nAuthorization: Bearer ${managed ? 'YOUR_MANAGED_INTEGRATION_SECRET' : 'YOUR_SECRET_TOKEN'}\nContent-Type: application/json\n\n${JSON.stringify(exampleData(ledger.fields, includeOptional), null, 2)}`}</pre>
       <p>For safe retries, add an optional <code>Idempotency-Key</code> header and reuse its value only for the same record. Without it, each accepted request creates a new record.</p>
     </details>}
-    <button disabled={busy || !details} onClick={rotate}>{busy ? 'Replacing…' : 'Rotate write token'}</button>
+    {!managed && <button disabled={busy || !details} onClick={rotate}>{busy ? 'Replacing…' : 'Rotate write token'}</button>}
   </section>;
 }
 
