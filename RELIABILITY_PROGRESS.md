@@ -39,3 +39,13 @@ The real dependency-install/build-only command, readiness check, and actual `dep
 Hosted full-schema recovery and Ubuntu runtime results are tracked by the new branch workflow; a local passing suite alone does not establish those results.
 
 The first hosted run exposed a pre-existing HTTP test crossing from 02:40:59 to 02:41:00 between a policy change and its rate-limit assertion. The real fixed-window quota correctly reset. That test now fixes its clock only during the related real HTTP/database assertions; production limits are unchanged. All four targeted HTTP tests and all 34 tool tests passed after this test-only correction. The corrected commit requires a fresh hosted full-suite run.
+
+## Hosted verification completed
+
+[GitHub Actions run 40808291012](https://github.com/pulkits2609/Chainguard/actions/runs/40808291012) passed at code revision `ed68d816f341555990e819333dbfc5ec2594c379`:
+
+- 113 backend, 34 tool and 21 frontend tests, plus production build.
+- Entire disposable application public schema dumped, dropped and transactionally restored; restored accounts/sessions, policies, HMAC credentials/idempotency, grants, full history, encrypted snapshot and signed checkpoint all verified. External private keys remained unchanged.
+- One-script initialization checked twice; Ubuntu application startup, authenticated/private access, and restart persistence passed; deployment shell syntax passed.
+
+The initial recovery-step tooling attempt could not install PostgreSQL 18 clients from Ubuntu's available apt repositories and stopped before executing the drill. The final CI step reuses matching clients from its existing official PostgreSQL 18 container with the hosted runner's UID and temporary directory. This adds no Docker requirement to the actual deployment command. No destructive schema recovery was run on the laptop. The following commit records documentation only; the linked run establishes verification of all delivered application and workflow changes.

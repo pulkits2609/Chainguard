@@ -64,6 +64,8 @@ Freshly initialized services verify restored account login/session state, origin
 
 The four local guard tests pass without executing destructive database work. **Actual whole-schema restoration is verified only when the hosted recovery step for the submitted revision passes.** This expands the earlier table-only proof to all application public-schema state, but still does not demonstrate recovery of cluster roles, the PostgreSQL cluster itself, lost external private keys, machine reboot or a public certificate deployment.
 
+**Hosted result: PASS.** [Run 40808291012](https://github.com/pulkits2609/Chainguard/actions/runs/40808291012), code revision `ed68d81`, completed the actual full public-schema recovery and every post-restore assertion above. The workflow uses matching-version PostgreSQL 18 clients from the existing CI service image; keys remain protected outside the database. This result applies to the isolated hosted application schema, with the stated recovery limits unchanged.
+
 ## Targeted checks
 
 - `python -B tools/run_checks.py --pattern test_tls_operations.py`: TLS classification, real trusted-CA HTTPS, secure cookies/CSRF and empty-search-path trigger regression.
