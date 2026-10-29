@@ -75,7 +75,7 @@ class WebTests(unittest.TestCase):
         self.server.server_close()
         for ledger_id in self.ledgers:
             try:
-                self.store.delete_ledger(ledger_id)
+                self.store.delete_ledger(ledger_id, test_cleanup=True)
             except ValueError:
                 pass
         with self.accounts.connect() as connection:

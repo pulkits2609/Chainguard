@@ -12,6 +12,7 @@ import psycopg
 from cryptography.fernet import Fernet
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
 from field_schema import validate_data, validate_fields, reject_nul
@@ -22,6 +23,9 @@ from ledger import (LedgerConflict, MAX_BODY_BYTES, calculate_hash, canonical_js
 
 
 LEDGER_STATES = {"active", "read_only", "archived"}
+# Conservative accepted-history ceiling: ASCII blocks plus wrappers fit an 8 MiB
+# JSON export, and compact UTF-8 + Fernet/base64 overhead stays below 8 MiB too.
+MAX_ACCEPTED_HISTORY_BYTES = 5 * 1024 * 1024
 
 
 def history_byte_budget():
@@ -106,9 +110,11 @@ def validate_label(value, label, maximum, allow_empty=False):
 
 
 class Store:
-    def __init__(self, database_url):
+    def __init__(self, database_url, *, initialize=True):
         require_chainguard_database(database_url)
         self.database_url = database_url
+        if not initialize:
+            return
         with self.connect() as connection:
             connection.execute("""CREATE TABLE IF NOT EXISTS ledger_registry (
                 id TEXT PRIMARY KEY,
@@ -129,7 +135,7 @@ class Store:
             connection.execute("ALTER TABLE ledger_registry ADD COLUMN IF NOT EXISTS history_revision BIGINT NOT NULL DEFAULT 0")
             connection.execute("""CREATE OR REPLACE FUNCTION chainguard_history_changed() RETURNS trigger
                 LANGUAGE plpgsql AS $$ BEGIN
-                    UPDATE ledger_registry SET history_revision=history_revision+1 WHERE id=TG_ARGV[0];
+                    UPDATE public.ledger_registry SET history_revision=history_revision+1 WHERE id=TG_ARGV[0];
                     RETURN NULL;
                 END $$""")
             # Initialize metadata only for verifiable legacy histories. Never rewrite blocks.
@@ -185,8 +191,8 @@ class Store:
         managed_writes_required = template_id is not None
         write_token = None if managed_writes_required else secrets.token_urlsafe(32)
         genesis = ledger_genesis(ledger_id, fields)
-        if len(json.dumps(genesis, ensure_ascii=True).encode('utf-8')) > history_byte_budget():
-            raise OverflowError('Genesis exceeds the configured interactive history budget')
+        if len(json.dumps(genesis, ensure_ascii=True).encode('utf-8')) > min(history_byte_budget(), MAX_ACCEPTED_HISTORY_BYTES):
+            raise OverflowError('Genesis exceeds the exportable history budget')
         with self.connect() as connection:
             connection.execute("""INSERT INTO ledger_registry
                 (id, owner_id, name, description, state, fields, created_at, token_hash, visibility, template_id, managed_writes_required)
@@ -257,7 +263,7 @@ class Store:
                                (token_hash(write_token), ledger_id))
         return {"ledger_id": ledger_id, "write_token": write_token, "write_path": "/api/ledgers/" + ledger_id + "/blocks"}
 
-    def update_ledger(self, ledger_id, changes=None, **updates):
+    def update_ledger(self, ledger_id, changes=None, audit=None, **updates):
         changes = dict(changes or {}) | updates
         if not changes or set(changes) - {"name", "description", "state", "visibility"}:
             raise ValueError("Only ledger name, description, state and visibility can be changed")
@@ -274,14 +280,31 @@ class Store:
             assignments = sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changes)
             connection.execute(sql.SQL("UPDATE ledger_registry SET {} WHERE id = %s").format(assignments),
                                (*changes.values(), ledger_id))
+            if audit:
+                audit.record('ledger', 'update', 'accepted', 'ledger_archived' if changes.get('state') == 'archived' else 'metadata_updated', ledger_id=ledger_id, connection=connection)
             return self._public(connection, self._metadata(connection, ledger_id))
 
-    def delete_ledger(self, ledger_id):
+    def delete_ledger(self, ledger_id, *, test_cleanup=False, audit=None):
+        if test_cleanup and conninfo_to_dict(self.database_url).get('dbname') != 'chainguard_test':
+            raise StoreForbidden('Fixture cleanup is permitted only in chainguard_test')
+        blocked = False
         with self.connect() as connection:
-            self._metadata(connection, ledger_id, lock=True)
-            for name in table_names(ledger_id):
-                connection.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
-            connection.execute("DELETE FROM ledger_registry WHERE id = %s", (ledger_id,))
+            row = self._metadata(connection, ledger_id, lock=True)
+            blocks, _ = table_names(ledger_id)
+            operational = (row.get('template_id') is not None or row.get('managed_writes_required')) and connection.execute(
+                sql.SQL('SELECT 1 FROM {} WHERE position>0 LIMIT 1').format(sql.Identifier(blocks))).fetchone() is not None
+            if operational and not test_cleanup:
+                blocked = True
+                if audit:
+                    audit.record('ledger_retention', 'delete', 'rejected', 'hard_delete_blocked', ledger_id=ledger_id, connection=connection)
+            else:
+                for name in table_names(ledger_id):
+                    connection.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
+                connection.execute("DELETE FROM ledger_registry WHERE id = %s", (ledger_id,))
+                if audit:
+                    audit.record('ledger', 'delete', 'accepted', 'legacy_ledger_deleted', ledger_id=ledger_id, connection=connection)
+        if blocked:
+            raise LedgerConflict('Operational template ledgers cannot be hard-deleted; archive the ledger and retain its evidence')
 
     def _blocks(self, connection, ledger_id, with_budget=False):
         blocks, _ = table_names(ledger_id)
@@ -362,8 +385,8 @@ class Store:
                     raise LedgerConflict("This record_id already has different data")
                 return block, True
         block = create_new_block(blocks[-1], submission)
-        if len(blocks) >= 100000 or history_bytes + len(json.dumps(block, ensure_ascii=True).encode('utf-8')) > maximum_bytes:
-            raise OverflowError('Append would exceed the interactive history budget; use a new operational ledger')
+        if len(blocks) >= 100000 or history_bytes + len(json.dumps(block, ensure_ascii=True).encode('utf-8')) > min(maximum_bytes, MAX_ACCEPTED_HISTORY_BYTES):
+            raise OverflowError('Append would exceed the exportable history budget; archive and start a new operational ledger')
         block_table, _ = table_names(ledger_id)
         connection.execute(sql.SQL("INSERT INTO {} (position, record_id, record) VALUES (%s, %s, %s)")
                            .format(sql.Identifier(block_table)), (block["index"], block["record_id"], Jsonb(block)))

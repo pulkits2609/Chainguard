@@ -31,7 +31,7 @@ class TemplateStoreTests(unittest.TestCase):
 
     def tearDown(self):
         for identifier in self.created:
-            self.store.delete_ledger(identifier)
+            self.store.delete_ledger(identifier, test_cleanup=True)
 
     def test_templates_use_ordinary_genesis_and_default_private(self):
         values = {'shipment_id':'SHP-test','event_type':'RESOURCE_CREATED', 'event_time':'2026-10-28T10:00:00Z',

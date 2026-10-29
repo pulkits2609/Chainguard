@@ -74,10 +74,19 @@ jobs:
           SQL
       - name: Run every automated test and build the frontend
         run: python -B tools/run_checks.py --frontend
+      - name: Restore the entire disposable application schema and verify evidence
+        run: |
+          if [ ! -x /usr/lib/postgresql/18/bin/pg_dump ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client-18
+          fi
+          export PATH="/usr/lib/postgresql/18/bin:$PATH"
+          pg_dump --version
+          python -B tools/verify_ci_database_recovery.py --disposable-ci
       - name: Check repeatable application initialization
         run: |
-          python -B server/app.py --check-db
-          python -B server/app.py --check-db
+          python -B deploy.py --skip-build --check --non-interactive
+          python -B deploy.py --skip-build --check --non-interactive
       - name: Smoke test Ubuntu startup, authenticated access and restart persistence
         run: |
           python - <<'PY'
@@ -178,3 +187,4 @@ jobs:
         run: |
           bash -n deploy/start-ubuntu.sh
           bash -n deploy/setup-ubuntu.sh
+          bash -n deploy/start-chainguard.sh

@@ -36,7 +36,7 @@ class ManagedCredentialStoreTests(unittest.TestCase):
 
     def tearDown(self):
         for identifier in self.created:
-            self.store.delete_ledger(identifier)
+            self.store.delete_ledger(identifier, test_cleanup=True)
         self.temporary.cleanup()
 
     def create(self, **kwargs):

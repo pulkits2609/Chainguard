@@ -35,6 +35,10 @@ class HttpError(Exception):
         self.status, self.message = status, message
 
 
+class TLSClientDisconnected(ConnectionError):
+    """A peer abandoned its handshake before an HTTP request existed."""
+
+
 class LoginLimits:
     """Small process-local throttle shared by registration and login."""
     def __init__(self):
@@ -95,9 +99,16 @@ class WebServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         try:
-            super().process_request_thread(request, client_address)
+            self.finish_request(request, client_address)
+        except TLSClientDisconnected:
+            pass
+        except Exception:
+            self.handle_error(request, client_address)
         finally:
-            self.workers.release()
+            try:
+                self.shutdown_request(request)
+            finally:
+                self.workers.release()
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -106,7 +117,10 @@ class WebHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(10)
         if isinstance(self.connection, ssl.SSLSocket):
             # Handshake in this bounded worker; a silent peer must not block the accept loop.
-            self.connection.do_handshake()
+            try:
+                self.connection.do_handshake()
+            except (ssl.SSLEOFError, ssl.SSLZeroReturnError, ConnectionResetError, BrokenPipeError, TimeoutError):
+                raise TLSClientDisconnected('TLS client disconnected before request') from None
 
     def security_headers(self):
         self.send_header("Cache-Control", "no-store")
@@ -328,7 +342,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 metadata = self.server.store.get_ledger(ledger_id)
                 if not user['is_admin'] and (metadata['owner_id'] != user['id'] or set(changes) != {'visibility'}):
                     raise StoreForbidden("Only administrators manage metadata; owners may change visibility")
-                ledger = self.server.store.update_ledger(ledger_id, changes)
+                ledger = self.server.store.update_ledger(ledger_id, changes, audit=self.server.audit)
                 return self.send_json(200, {"ledger": self.metadata(ledger, self.current_user())})
             if method == "DELETE" and not operation:
                 self.current_user(required=True, csrf=True, admin=True)
@@ -336,7 +350,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 ledger = self.server.store.get_ledger(ledger_id)
                 if not isinstance(value, dict) or value != {"confirm": ledger["name"]}:
                     raise ValueError("Confirm deletion using the exact ledger name")
-                self.server.store.delete_ledger(ledger_id)
+                self.server.store.delete_ledger(ledger_id, audit=self.server.audit)
                 return self.send_json(200, {"deleted": True})
             if method == "POST" and operation == "blocks":
                 self.server.integrations.throttle(self.client_address[0])

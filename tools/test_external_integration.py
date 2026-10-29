@@ -245,7 +245,7 @@ def run(source):
                 stop_owned(source_process)
                 stop_owned(livekit_process)
                 if ledger_id:
-                    store.delete_ledger(ledger_id)
+                    store.delete_ledger(ledger_id, test_cleanup=True)
                 with store.connect() as connection:
                     if user_id:
                         connection.execute("DELETE FROM users WHERE id=%s", (user_id,))
