@@ -108,3 +108,7 @@ Phase 1 commit: server/ledger_templates.py, server/store.py, server/web_app.py, 
 - Actual Ubuntu runtime/systemd acceptance remains unverified; scripts passed syntax checks. No other implementation dependency is blocked.
 - Full delivery report: IMPLEMENTATION_REPORT.md.
 - No remote pushes, no original database/source edits, no committed local credentials.
+
+## Subsequent audit follow-ups
+
+The handoff above records the original Phase 0–11 completion, before the later authorized GitHub pushes and audit work. The first audit follow-up is recorded in `AUDIT_REMEDIATION.md` and the latest reliability/deployment work in `RELIABILITY_PROGRESS.md`. The latest work adds export-safe capacity, operational retention, slower/background-aware polling, one-script startup, HTTPS and recovery checks, and a fresh automatic AudioShare acceptance. Raspberry Pi/systemd deployment is excluded by the user; no license is added. Refer to the latest progress report for current test counts and hosted verification rather than the original phase totals.

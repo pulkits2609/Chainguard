@@ -2,6 +2,16 @@
 
 **SECURE → RECORD → VERIFY.** Security middleware for existing applications, built on the original Python HTTP server, PostgreSQL store, React UI, and SHA-256 ledger engine. No distributed consensus, cryptocurrency, additional infrastructure, or framework rewrite.
 
+## Start with one script
+
+```powershell
+python deploy.py
+```
+
+Or double-click **Deploy ChainGuard.bat** on Windows; on Ubuntu use `bash deploy/start-chainguard.sh`. The shared entry point builds the frontend, prepares the project Python environment/dependencies, preserves or configures `.env`, validates database/TLS settings, initializes schema and persistent keys, initializes an absent administrator once, and starts the application directly. Python 3.11+, Node/npm and PostgreSQL must already be installed. No global OS packages, Pi setup or service installation are performed. Production HTTPS requires your actual certificate/key and hostname; development stays loopback-only. See [deployment instructions](docs/DEPLOYMENT.md).
+
+Latest reliability work: [export capacity and retention](docs/EXPORT_AND_RETENTION.md), [in-app browser and polling evidence](docs/BROWSER_RELIABILITY.md), and [HTTPS/key/backup verification](docs/OPERATIONAL_VERIFICATION.md). The repository remains unlicensed by the owner's choice.
+
 ## Features
 
 - Shipment Events, Warehouse Inventory, Chain of Custody, and Generic Security Events templates; custom fixed schemas remain supported.
@@ -27,7 +37,7 @@ See [implementation progress](IMPLEMENTATION_PROGRESS.md), [frozen blueprint](do
 
 Read gates are intentionally process-local for this single-process deployment: default 60 ledger requests and 30 customer attempts per peer IP per minute, with bounded source bookkeeping. They complement the existing persistent integration and per-grant limits. Only the first denied source request per window is audited, so repeated denied guesses do not create unbounded telemetry writes. Behind NAT, clients share their source allowance; this MVP does not infer proxy trust.
 
-Full history reads are streamed into a default 32 MiB/100,000-block interactive budget (byte cap configurable up to 64 MiB). Genesis/append preflight checks reject a write before it would make the ledger unreadable under that budget. Configure budgets before commissioning a ledger; reducing a budget below existing history can intentionally make interactive operations unavailable. Partition operational ledgers accordingly. Full-chain append verification remains enabled and writes remain O(N); [measured 1,000/10,000-block results](docs/PERFORMANCE_MEASUREMENTS.md) describe that limitation rather than claiming enterprise throughput.
+New history writes are capped conservatively at 5 MiB of ASCII-serialized blocks so the complete JSON and encrypted snapshot workflows stay within their existing 8 MiB formats. The separate default 32 MiB/100,000-block read budget remains available for inspection/recovery of legacy histories. Genesis/append checks reject excess growth before commit. Legacy oversized histories have a read-only operator export path; no historical blocks are silently rewritten. Configure budgets before commissioning a ledger. Full-chain append verification remains enabled and writes remain O(N); [measured 1,000/10,000-block results](docs/PERFORMANCE_MEASUREMENTS.md) describe that limitation rather than claiming enterprise throughput.
 
 ## Architecture and compatibility
 
@@ -166,7 +176,7 @@ See the blueprint for methods and the dashboard for examples. Browser mutations 
 .venv\Scripts\python.exe tools/test_external_integration.py
 ```
 
-The first command loads local `.env`, refuses unsafe test targets, and runs all Python backend/launcher tests, frontend tests and production build. Tampering tests use only disposable test ledgers. No standalone lint/typecheck toolchain exists in the original project; syntax/build checks, helper/crypto tests, HTTP/PostgreSQL tests and browser smoke results are reported accurately.
+The first command loads local `.env`, refuses unsafe test targets, and runs all Python backend/launcher tests, frontend tests and production build. Tampering tests use only disposable test ledgers. Viewer polling now waits ten seconds, pauses while the tab is hidden, avoids overlapping requests and respects Retry-After; manual refresh remains available. No standalone lint/typecheck toolchain exists in the original project; syntax/build checks, helper/crypto tests, HTTP/PostgreSQL tests and browser smoke results are reported accurately.
 
 The external acceptance command requires the existing AudioShare checkout, its built Node backend and actual LiveKit/private voice binaries. It starts owned independent processes on unused ports, creates a genuine session/lobby, forwards the server-generated identity through generic ChainGuard APIs, tests retries/conflicts, signs a checkpoint and runs offline verification. It cleans its test resources/processes. [Recorded evidence](docs/EXTERNAL_INTEGRATION_EVIDENCE.md) demonstrates a real controlled application's operational event, not a logistics-provider integration.
 
