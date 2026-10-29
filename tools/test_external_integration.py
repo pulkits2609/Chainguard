@@ -48,6 +48,8 @@ def request(address, method, path, value=None, headers=None):
         if len(body) > 2 * 1024 * 1024:
             raise ValueError("Unexpectedly large integration response")
         return response.status, json.loads(body), dict(response.getheaders())
+    except http.client.RemoteDisconnected:
+        raise RuntimeError('Connection closed during ' + method + ' ' + path.split('?', 1)[0][:180]) from None
     finally:
         connection.close()
 
@@ -96,7 +98,7 @@ def wait_ready(process, address):
             status, _, _ = request(address, "GET", "/ready")
             if status == 200:
                 return
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             pass
         time.sleep(0.15)
     raise RuntimeError("Independent AudioShare did not become ready with its actual LiveKit and private voice services")
@@ -131,7 +133,9 @@ def run(source):
         descriptor = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write(config)
-        source_environment = {**os.environ, "HOST": "127.0.0.1", "PORT": str(api_port),
+        child_environment = {key: value for key, value in os.environ.items()
+                             if not key.startswith(('LEDGER_', 'CHAINGUARD_'))}
+        source_environment = {**child_environment, "HOST": "127.0.0.1", "PORT": str(api_port),
             "LIVEKIT_API_KEY": api_key, "LIVEKIT_API_SECRET": api_secret, "LIVEKIT_URL": f"http://127.0.0.1:{media_port}",
             "LIVEKIT_PUBLIC_URL": "", "VOICE_SERVER_EXECUTABLE": str(voice), "VOICE_SERVER_PORT": "",
             "JOIN_TOKEN": join_token, "ALLOW_GUESTS": "false", "ALLOWED_ORIGINS": f"http://127.0.0.1:{api_port}"}
@@ -140,9 +144,7 @@ def run(source):
         os.environ["LEDGER_INTEGRATION_KEY_PATH"] = str(temporary / "integration.key")
         with (temporary / "source.log").open("wb") as source_log, (temporary / "media.log").open("wb") as media_log:
             try:
-                livekit_process = launch([str(livekit), "--config", str(config_path)], temporary, os.environ.copy(), media_log)
-                source_process = launch([node, str(entry)], temporary, source_environment, source_log)
-                wait_ready(source_process, api_port)
+                livekit_process = launch([str(livekit), "--config", str(config_path)], temporary, child_environment, media_log)
                 server = WebServer(("127.0.0.1", 0), store, Accounts(database_url), temporary,
                                    secure_cookies=False, development=True, key_directory=temporary)
                 key_id = server.checkpoints.verification_key["key_id"]
@@ -157,23 +159,44 @@ def run(source):
                 status, created, _ = request(address, "POST", "/api/ledgers", {"name": "AudioShare operational integration", "description": "Actual independent session creation; disposable acceptance run", "template_id": "security_events"}, session)
                 expect(status, 201, "Private operational ledger creation")
                 ledger_id = created["ledger"]["id"]
-                status, connector, _ = request(address, "POST", "/api/integrations", {"ledger_id": ledger_id, "name": "AudioShare controlled session source", "auth_method": "bearer", "event_id_field": "resource_id"}, session)
+                status, connector, _ = request(address, "POST", "/api/integrations", {"ledger_id": ledger_id, "name": "AudioShare controlled session source", "auth_method": "bearer", "event_id_field": "event_id"}, session)
                 expect(status, 201, "Authenticated connector creation")
                 authorization = {"Authorization": "Bearer " + connector["secret"]}
+                path = "/api/ledgers/" + ledger_id
+                source_environment.update(CHAINGUARD_EVENT_URL=f"http://127.0.0.1:{address}{path}/blocks",
+                                          CHAINGUARD_EVENT_TOKEN=connector['secret'],
+                                          CHAINGUARD_ADAPTER_ALLOW_LOOPBACK_HTTP='true')
+                preload = ROOT / 'adapters' / 'audioshare_events.mjs'
+                source_process = launch([node, '--import', preload.as_uri(), str(entry)], temporary, source_environment, source_log)
+                wait_ready(source_process, api_port)
                 status, source_event, _ = request(api_port, "POST", "/v1/session", {"name": "ChainGuard acceptance", "room": "chainguard-" + uuid.uuid4().hex[:16], "token": join_token})
                 expect(status, 200, "Independent AudioShare session creation")
                 identity = str(uuid.UUID(source_event["identity"]))
                 if not isinstance(source_event.get("voiceLobby"), dict) or not isinstance(source_event["voiceLobby"].get("groupId"), int):
                     raise RuntimeError("Independent source did not return an actual voice-lobby resource")
-                event = {"event_type": "SESSION_CREATED", "source_system": "audioShare", "resource_id": identity,
-                         "event_time": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")}
-                path = "/api/ledgers/" + ledger_id
-                rest_headers = {**authorization, "Idempotency-Key": identity}
-                status, first, _ = request(address, "POST", path + "/blocks", event, rest_headers)
-                expect(status, 201, "Operational REST ingestion")
+                # The acceptance harness does not construct or forward this event.
+                # Ordinary source API completion must cause the preloaded source
+                # adapter to deliver it automatically. We only observe the target.
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    status, history, _ = request(address, 'GET', path, headers=session)
+                    expect(status, 200, 'Observe automatic source event')
+                    matches = [block for block in history['blocks'][1:]
+                               if block.get('data', {}).get('resource_id') == identity]
+                    if matches:
+                        break
+                    time.sleep(0.2)
+                else:
+                    raise RuntimeError('Source activity did not automatically appear in ChainGuard')
+                first = matches[0]
+                event = first['data']
+                if set(event) != {'event_type', 'source_system', 'resource_id', 'event_time'} or event['event_type'] != 'SESSION_CREATED' or event['source_system'] != 'audioShare':
+                    raise RuntimeError('Automatic adapter forwarded unexpected source fields')
+                logical_id = hashlib.sha256(f"{event['source_system']}\0{event['event_type']}\0{identity}".encode()).hexdigest()
+                rest_headers = {**authorization, "Idempotency-Key": logical_id}
                 status, duplicate, _ = request(address, "POST", path + "/blocks", event, rest_headers)
                 expect(status, 200, "Operational REST retry")
-                if not duplicate["duplicate"] or duplicate["block"]["hash"] != first["block"]["hash"]:
+                if not duplicate["duplicate"] or duplicate["block"]["hash"] != first["hash"]:
                     raise RuntimeError("REST retry did not return the original durable record")
                 changed = {**event, "event_type": "CONFLICTING_OPERATION"}
                 status, _, _ = request(address, "POST", path + "/blocks", changed, rest_headers)
@@ -181,7 +204,7 @@ def run(source):
                 status, _, _ = request(address, "POST", path + "/blocks", event, {"Authorization": "Bearer invalid"})
                 expect(status, 403, "Invalid integration credential")
                 webhook = "/api/integrations/" + connector["integration"]["id"] + "/webhook"
-                status, retried_webhook, _ = request(address, "POST", webhook, event, authorization)
+                status, retried_webhook, _ = request(address, "POST", webhook, {**event, 'event_id': logical_id}, authorization)
                 expect(status, 200, "Webhook retry of the same source event")
                 if not retried_webhook["duplicate"]:
                     raise RuntimeError("Webhook and REST did not share durable deduplication")
@@ -203,12 +226,15 @@ def run(source):
                     raise RuntimeError("Independent application's entry point changed during the acceptance run")
                 return {"result": "PASS", "source_application": "Existing independently running AudioShare session backend",
                         "source_operation": "POST /v1/session", "event_type": event["event_type"], "resource_id": identity,
-                        "actual_voice_lobby_created": True, "rest_ingestion": "201", "idempotent_rest_retry": "200, duplicate=true",
+                        "actual_voice_lobby_created": True, "automatic_forwarding": True,
+                        "forwarding_mechanism": "Application-side HTTP finish-event preload middleware",
+                        "harness_forwarded_initial_event": False, "native_provider_webhook": False,
+                        "rest_ingestion": "Committed automatically", "idempotent_rest_retry": "200, duplicate=true",
                         "conflicting_retry": "409", "invalid_credential": "403", "webhook_retry": "200, duplicate=true",
                         "recorded_business_events": 1, "ledger_verification": "valid", "offline_full_history_verification": "valid",
                         "source_code_modified": False, "production_database_used": False,
                         "source_entry_sha256": source_entry_hash,
-                        "trust_limit": "The adapter observes a real application API result. This is operational session evidence, not a DHL shipment or proof of a physical delivery."}
+                        "trust_limit": "Application-side middleware automatically observes a successful source HTTP completion. This is operational session evidence, not provider-native webhook support, a DHL shipment, or proof of a physical delivery."}
             finally:
                 if server:
                     server.shutdown()
@@ -248,7 +274,8 @@ def main():
         "Reproduce from ChainGuard with `.venv\\Scripts\\python.exe tools/test_external_integration.py`. "
         "Requires the existing AudioShare checkout, its built service, Node, actual LiveKit and private voice executables, and the local `chainguard_test` connection in `.env`. "
         "No media simulator is used. Test accounts, ledgers, connector secrets and owned processes are removed after the run. "
-        "The generic adapter forwards only source event type, source-system label, server-generated resource identity and event time; JWTs and access tokens are excluded. "
+        "The application-side preload automatically forwards only source event type, source-system label, server-generated resource identity and event time; JWTs and access tokens are excluded. "
+        "The acceptance script only triggers the source operation and polls for the initial event; later manual retries test the API contract. "
         "A passing run demonstrates a real separate application's operational event. It does not establish a logistics-provider integration.\n", encoding="utf-8")
     print(json.dumps(evidence, indent=2))
     return 0 if evidence["result"] == "PASS" else 1
