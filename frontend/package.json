@@ -1,12 +1,12 @@
 {
-  "name": "blockchain-ledger-viewer",
+  "name": "chainguard-dashboard",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/api.test.js src/snapshotStatus.test.js src/requestExample.test.js src/dashboardHelpers.test.js",
+    "test": "node --test src/api.test.js src/snapshotStatus.test.js src/requestExample.test.js src/dashboardHelpers.test.js src/ledgerPolling.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

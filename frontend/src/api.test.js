@@ -67,3 +67,12 @@ test('binary validation preserves content type and caller cancellation', async (
     assert.equal(result.valid, false);
   } finally { globalThis.fetch = original; }
 });
+
+test('API rate errors expose status and Retry-After for bounded polling backoff', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 429,
+    headers: new Headers({ 'Retry-After': '90' }), json: async () => ({ error: 'Read limit reached' }) });
+  try {
+    await assert.rejects(apiRequest('/api/ledgers/example'), error => error.status === 429 && error.retryAfterMs === 90000);
+  } finally { globalThis.fetch = original; }
+});

@@ -76,7 +76,7 @@ function AdminEdit({ ledger, user, onSaved, onClose }) {
   }
   return <section className="form-panel">
     <div className="details-heading"><h2>Manage · {ledger.name}</h2><button disabled={busy} onClick={onClose}>Close</button></div>
-    <p>Owners can change visibility. Administrators can also manage labels and availability. Stored blocks and their structure remain immutable.</p>
+    <p>Owners can change visibility. Administrators can also manage labels and availability. Records are append-only through the API; populated operational template ledgers are retained through archival.</p>
     <form onSubmit={submit}>
       {user.is_admin && <><label>Name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)}/></label>
       <label>Description<textarea maxLength={500} value={description} onChange={event => setDescription(event.target.value)}/></label>
@@ -85,7 +85,9 @@ function AdminEdit({ ledger, user, onSaved, onClose }) {
       {visibility === 'public' && <p className="notice warning">Public visibility exposes full block payloads, including any internal fields. Use private visibility for shipment data.</p>}
       <button disabled={busy}>Save changes</button>
     </form>
-    {user.is_admin && <details className="delete-section"><summary>Delete this ledger</summary><p>Deleting removes this ledger and its encryption key. Its downloaded snapshots can no longer be validated. This cannot be undone.</p><label>Type “{ledger.name}” to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)}/></label><button className="danger" disabled={busy || confirmation !== ledger.name} onClick={remove}>Delete ledger permanently</button></details>}
+    {user.is_admin && ((ledger.template_id || ledger.managed_writes_required) && ledger.block_count > 1
+      ? <p className="notice">Operational records are retained. Use read-only or archived state to stop writes; hard deletion is disabled for this populated ledger.</p>
+      : <details className="delete-section"><summary>Delete this ledger</summary><p>Deleting removes this ledger and its encryption key. Its downloaded snapshots can no longer be validated. This cannot be undone.</p><label>Type “{ledger.name}” to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)}/></label><button className="danger" disabled={busy || confirmation !== ledger.name} onClick={remove}>Delete ledger permanently</button></details>)}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </section>;
 }

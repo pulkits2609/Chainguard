@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { retryAfterMilliseconds, startLedgerPolling } from './ledgerPolling.js';
 
 let csrfToken = '';
-const PollDelay = 1500;
 
 export async function apiRequest(path, options = {}) {
   const method = options.method || 'GET';
@@ -17,7 +17,10 @@ export async function apiRequest(path, options = {}) {
   }
   if (!response.ok) {
     if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('session-expired'));
-    throw new Error(body.error || `Request failed (${response.status}).`);
+    const error = new Error(body.error || `Request failed (${response.status}).`);
+    error.status = response.status;
+    error.retryAfterMs = retryAfterMilliseconds(response.headers?.get('Retry-After'));
+    throw error;
   }
   if (Object.hasOwn(body, 'csrf_token')) csrfToken = body.csrf_token || '';
   if (path === '/api/logout') csrfToken = '';
@@ -67,50 +70,40 @@ export function useLedger(id) {
   const [connection, setConnection] = useState('loading');
   const [error, setError] = useState('');
   const [lastReceived, setLastReceived] = useState(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const polling = useRef(null);
 
   useEffect(() => {
-    let stopped = false;
-    let timer;
-    let controller;
-    let requestTimeout;
     setLedger(null);
     setConnection('loading');
     setError('');
     setLastReceived(null);
     if (!id) return undefined;
 
-    async function readLedger() {
-      controller = new AbortController();
-      requestTimeout = window.setTimeout(() => controller.abort(), 5000);
-      try {
-        const result = await apiRequest(ledgerPath(id), { signal: controller.signal });
+    const active = startLedgerPolling({
+      read: async signal => {
+        const result = await apiRequest(ledgerPath(id), { signal });
         if (!Array.isArray(result.blocks) || typeof result.verification?.valid !== 'boolean') {
           throw new Error('The server returned an incomplete ledger response.');
         }
-        if (stopped) return;
+        return result;
+      },
+      onValue: result => {
         setLedger(result);
         setConnection('online');
         setError('');
         setLastReceived(new Date());
-      } catch (requestError) {
-        if (stopped) return;
+      },
+      onError: requestError => {
         setConnection('offline');
         setError(requestError.name === 'AbortError' ? 'The server did not respond within five seconds.' : requestError.message);
-      } finally {
-        window.clearTimeout(requestTimeout);
-        // Wait for this request before scheduling another poll.
-        if (!stopped) timer = window.setTimeout(readLedger, PollDelay);
-      }
-    }
-    readLedger();
+      },
+    });
+    polling.current = active;
     return () => {
-      stopped = true;
-      controller?.abort();
-      window.clearTimeout(requestTimeout);
-      window.clearTimeout(timer);
+      active.stop();
+      if (polling.current === active) polling.current = null;
     };
-  }, [id, refreshKey]);
+  }, [id]);
 
-  return { ledger, connection, error, lastReceived, refresh: () => setRefreshKey(value => value + 1) };
+  return { ledger, connection, error, lastReceived, refresh: () => polling.current?.refresh() };
 }
