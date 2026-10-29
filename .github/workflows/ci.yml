@@ -76,11 +76,21 @@ jobs:
         run: python -B tools/run_checks.py --frontend
       - name: Restore the entire disposable application schema and verify evidence
         run: |
-          if [ ! -x /usr/lib/postgresql/18/bin/pg_dump ]; then
-            sudo apt-get update
-            sudo apt-get install -y postgresql-client-18
-          fi
-          export PATH="/usr/lib/postgresql/18/bin:$PATH"
+          # Reuse the service's official image for matching-version client tools.
+          # Files and UID match the isolated host temp directory; no OS install.
+          mkdir -p "$RUNNER_TEMP/pg-client"
+          for client in pg_dump pg_restore; do
+            cat > "$RUNNER_TEMP/pg-client/$client" <<'SH'
+          #!/usr/bin/env bash
+          exec docker run --rm --network host --user "$(id -u):$(id -g)" \
+            --volume "${RUNNER_TEMP}:${RUNNER_TEMP}" \
+            --env PGHOST --env PGPORT --env PGDATABASE --env PGUSER --env PGPASSWORD --env PGSSLMODE \
+            postgres:18 "$(basename "$0")" "$@"
+          SH
+            chmod 700 "$RUNNER_TEMP/pg-client/$client"
+          done
+          export PATH="$RUNNER_TEMP/pg-client:$PATH"
+          export TMPDIR="$RUNNER_TEMP"
           pg_dump --version
           python -B tools/verify_ci_database_recovery.py --disposable-ci
       - name: Check repeatable application initialization
