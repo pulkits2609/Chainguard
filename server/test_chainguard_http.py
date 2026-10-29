@@ -8,7 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 import test_webapp as legacy_tests
 
@@ -112,14 +114,17 @@ class ChainGuardHttpTests(unittest.TestCase):
         event={'shipment_id':'TEST-1','event_type':'RESOURCE_CREATED','source_system':'AUTOMATED_TEST',
                'event_time':datetime.datetime.now(datetime.timezone.utc).isoformat(),'operator_id':'INTERNAL-EMPLOYEE'}
         retry={'Idempotency-Key':'event-http-1'}
-        self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers=retry)[0],201)
-        self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers=retry)[0],200)
-        self.assertEqual(self.request('POST',path+'/blocks',{**event,'event_type':'CHANGED'},token=token,headers=retry)[0],409)
-        self.assertEqual(self.request('GET',path,token=token)[0],403)
-        self.assertEqual(self.request('POST',path+'/verify',{},token=token)[0],403)
-        self.assertEqual(self.request('PATCH',ipath+'/policy',{'require_authentication':False},cookie,csrf)[0],400)
-        self.assertEqual(self.request('PATCH',ipath+'/policy',{'requests_per_minute':1},cookie,csrf)[0],200)
-        self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers={'Idempotency-Key':'rate-hit'})[0],429)
+        # Keep real HTTP/DB rate accounting within one fixed minute. Crossing a
+        # wall-clock boundary legitimately starts a fresh quota and is not a failure.
+        with patch('integrations.time.time', return_value=time.time()):
+            self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers=retry)[0],201)
+            self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers=retry)[0],200)
+            self.assertEqual(self.request('POST',path+'/blocks',{**event,'event_type':'CHANGED'},token=token,headers=retry)[0],409)
+            self.assertEqual(self.request('GET',path,token=token)[0],403)
+            self.assertEqual(self.request('POST',path+'/verify',{},token=token)[0],403)
+            self.assertEqual(self.request('PATCH',ipath+'/policy',{'require_authentication':False},cookie,csrf)[0],400)
+            self.assertEqual(self.request('PATCH',ipath+'/policy',{'requests_per_minute':1},cookie,csrf)[0],200)
+            self.assertEqual(self.request('POST',path+'/blocks',event,token=token,headers={'Idempotency-Key':'rate-hit'})[0],429)
         self.request('PATCH',ipath+'/policy',{'requests_per_minute':60},cookie,csrf)
         _,rotated,_=self.request('POST',ipath+'/rotate-secret',{},cookie,csrf)
         self.assertEqual(self.request('POST',path+'/blocks',event,token=token)[0],401)

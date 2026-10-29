@@ -37,3 +37,5 @@ Fresh real external acceptance: **PASS**, with an actual independent AudioShare 
 The real dependency-install/build-only command, readiness check, and actual `deploy.py --skip-build --non-interactive` startup passed. The app remains available at loopback port 8000, opened inside Codex's in-app browser. No external/native browser is needed. A private `.env` credential scan of tracked candidates passed, and configuration/keys remain ignored.
 
 Hosted full-schema recovery and Ubuntu runtime results are tracked by the new branch workflow; a local passing suite alone does not establish those results.
+
+The first hosted run exposed a pre-existing HTTP test crossing from 02:40:59 to 02:41:00 between a policy change and its rate-limit assertion. The real fixed-window quota correctly reset. That test now fixes its clock only during the related real HTTP/database assertions; production limits are unchanged. All four targeted HTTP tests and all 34 tool tests passed after this test-only correction. The corrected commit requires a fresh hosted full-suite run.
